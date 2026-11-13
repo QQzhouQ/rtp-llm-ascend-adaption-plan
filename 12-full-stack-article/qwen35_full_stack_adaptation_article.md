@@ -274,7 +274,40 @@ verify 一次 K+1 token 需要逐 token 写状态快照（回滚基础：接受�
 
 选择逐步而非单 launch 的原因：fla-npu 的多 token 单 launch 写错中间页 BF16 快照——同输入对拍 state 偏差 ~1e3（上游算子 bug，绕开而非等待修复）。状态页索引（读页/每 token 写页）在 device 侧计算，可入图。
 
-### 2.7 步骤与代码对照
+### 2.6 FIA verify 图（⑦ 的 full-attn 层）
+
+`ascend_prefill.py` 的 `AscendPrefillImpl` 增加图协议：
+
+- **捕获时**：`graph_task_group_begin/end` 包住 FIA v2 调用并留 ExternalEvent wait 点
+- **每次回放前**：`update_graph_fia` 在专用 update stream 上以真实 kvlen 重发 FIA（`graph_task_update_begin/end`）并 record event 释放 wait 点——**图内 kvlen 动态刷新、无 host stall**
+- 配套地，图模式下 RoPE positions 与 KV slot_mapping 改为 device 侧由 `sequence_lengths_plus_1` 派生
+
+### 2.7 代码修改总览（对照基线，11 文件 +667/-96）
+
+**C++ 侧（5 文件）**：
+
+| 文件 | 改动 | 对应步骤 |
+|---|---|---|
+| `cpp/models/PyWrappedModel.h` | 修正 SP 模型的图捕获形状：基线一刀切 `num_tokens_per_bs=K+1`（draft 也按 K+1 捕获，与每流 1 token 错配，图不可用）——改为 `!model_id` 区分：target=K+1、draft=1 | ⑤⑦ 的图/Eager 徽章来源 |
+| `cpp/ascend_graph/ascend_graph_runner.cc` | verify 捕获输入（prefill 形态标记、prefix_lengths 捕获）+ 回放双守卫 + layer_to_group min 截断 | ⑦ |
+| `cpp/normal_engine/speculative/MtpExecutor.cc` | `#if USING_ASCEND` 跳过 `sp_prefill_draft_model_` 创建（decode-only 语义） | ⑩ 走 eager 的原因 |
+| `cpp/normal_engine/speculative/SpeculativeSampler.cc` | generator 设备守卫 | ⑧ |
+| `cpp/normal_engine/speculative/MtpBatchStreamProcessor.cc` | ragged 布局注释 + accept_len 上界防御 | ⑨⑩ |
+
+**Python 侧（6 文件，按阶段）**：
+
+| 阶段 | 文件 | 新增/修改函数 |
+|---|---|---|
+| verify 状态推进（⑦ GDN 层） | `kernels/ascend/paged_state.py` | `speculative_state_indices`（per-token 独立 gather，返回 list[T]，每片天然连续） |
+| 同上 | `kernels/ascend/recurrent.py` | `_fused_recurrent_multi_device`（逐步 T==1）+ T>1 分发接线 |
+| 同上 | `kernels/ascend/causal_conv1d.py` | `_causal_conv1d_update_tokens_device`（conv 状态逐 token 滚动）+ T>1 分发接线 |
+| verify 图（⑦ FIA 层） | `attention/ascend_impl/ascend_prefill.py` | FIA 图捕获 / `prepare_cuda_graph` / `signal_graph_events` / `update_graph_fia` + device 侧 RoPE/slot |
+| 采样（⑧） | `bindings/core/CudaSampleOp.cc` | `chainSpeculativeSampling`（Ascend 分支，torch 组合） |
+| 并发聚合（⑤ 的 hidden 收集） | `bindings/core/CudaOps.cc` | `multiMergeCopy` D2D（`aclrtMemcpyAsync`） |
+
+注：`state_migration.py`（triton 页迁移 precopy）与基线零差异——strided 索引问题已通过 `speculative_state_indices` 的 per-token gather 在调用侧根治。
+
+### 2.8 步骤与代码对照
 
 | 步 | 环节 | 执行方式 | 代码入口 |
 |---|---|---|---|
@@ -290,7 +323,7 @@ verify 一次 K+1 token 需要逐 token 写状态快照（回滚基础：接受�
 | ⑩ | draft 重打头（ragged 多 token） | Eager | `draft_model_->forward`（fallback 路径） |
 | ⑪ | specUpdate 回写 | — | `prepareDecodeSpecUpdateInfo` → `specUpdate` |
 
-### 2.8 图外保护点（流程图看不到的）
+### 2.9 图外保护点（流程图看不到的）
 
 | 保护点 | 位置 | 存在原因 |
 |---|---|---|
@@ -303,7 +336,7 @@ verify 一次 K+1 token 需要逐 token 写状态快照（回滚基础：接受�
 | **逐步 T==1 的 seq_lengths 复用** | `recurrent.py` | 循环内每 token 复用缓存的 [0,1,1,...] device 张量，整环无 host 同步、可被 ACL Graph 捕获 |
 | **共享 cache 层零改动** | 不修改 KVCacheManager | layout 全长度问题（getMainModelCacheLayerLayout 返回含 draft 层的全长度）的一次性 memcpy 多写约 8 字节落入对齐 slack，实践无害——不为 1~2% 显存改共享语义 |
 
-### 2.9 结果
+### 2.10 结果
 
 | 配置 | TPOT avg | 相对 eager | MTP 接受率 |
 |---|---|---|---|
@@ -323,7 +356,7 @@ K=2 在此接受率下反而优于 K=3：K=3 的接受率增量（51.5→56.0%�
 | graph | 15.3 | 65.3 | 3.70× |
 | **graph + MTP** | **10.3** | **97.3** | **5.52×** |
 
-### 2.10 已知限制与后续方向
+### 2.11 已知限制与后续方向
 
 | 项 | 状态 |
 |---|---|
