@@ -173,9 +173,50 @@ TTFT p99 163s→73s（并发 64）、吞吐 172→321 tok/s（1.87×），精度
 
 ### 参考文档
 
-1. 图模式全实践：`6-graph-mode/qwen35-practice/`（方案C 总结、SGLang/vllm-ascend 调研、0.6B vs 35B 差异、conv1d 捕获问题）
-2. MTP 全记录：`7-mtp/`（调研与实施方案、Phase1+2 代码总结、调用流程、精度修复）
-3. Profiling：`9-profiling/`（vllm-ascend/xllm 剖析、rtp-llm 方案、FIA contiguous 分析）
-4. TP：`10-tp/`（分析、差距、实施方案、排障）
-5. 多模态：`11-multimodal/`（调研报告、实施方案含进度）
-6. 上游 PR：alibaba/rtp-llm#1620（图引擎）、#1666（Qwen3.5 + MTP + 多模态全栈）
+**图模式（aclgraph）**
+1. 方案C 总结（AscendC 单一消费者 GDN 入图）：[rtp-llm方案C-AscendC单一消费者GDN入图实施总结.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/rtp-llm方案C-AscendC单一消费者GDN入图实施总结.md)
+2. SGLang GDN 入图调研（方案A 前身）：[rtp-llm借鉴SGLang的GDN入图实施方案.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/rtp-llm借鉴SGLang的GDN入图实施方案.md)
+3. vLLM-Ascend GDN 调研：[rtp-llm借鉴vllm-ascend的GDN入图实施方案.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/rtp-llm借鉴vllm-ascend的GDN入图实施方案.md)
+4. GDN 性能优化探索：[图模式GDN性能优化探索记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/图模式GDN性能优化探索记录.md)
+5. conv1d 捕获同步问题：[causal_conv1d_graph_capture_sync_issue.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/causal_conv1d_graph_capture_sync_issue.md)
+6. Qwen3.5 验证总结：[图模式叠加Qwen3.5验证总结.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/图模式叠加Qwen3.5验证总结.md)
+7. SGLang Decode 阶段 GDN 调研：[SGLang_Decode阶段GDN实现调研.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/SGLang_Decode阶段GDN实现调研.md)
+8. 0.6B vs 35B 差异：[acl-graph路径-0.6B与35B差异.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/qwen35-practice/acl-graph路径-0.6B与35B差异.md)
+9. 图模式适配原始方案：[rtp-llm-aclgraph-adaptation-plan.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/6-graph-mode/rtp-llm-aclgraph-adaptation-plan.md)
+
+**MTP 投机解码**
+10. MTP 调研与实施方案（含 Phase1+2 全过程）：[rtp-llm-Ascend-MTP调研与实施方案.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/7-mtp/rtp-llm-Ascend-MTP调研与实施方案.md)
+11. Phase1+2 代码改动详细总结：[rtp-llm-Ascend-MTP-Phase1+ Phase 2代码改动详细总结.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/7-mtp/rtp-llm-Ascend-MTP-Phase1+%20Phase%202代码改动详细总结.md)
+12. MTP 调用流程图：[mtp_call_flow.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/7-mtp/mtp_call_flow.md)
+13. MTP 特性开发记录：[mtp_feature_dev.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/7-mtp/mtp_feature_dev.md)
+14. 多 bs 并发 prefill 乱码修复：[多bs并发prefill乱码精度问题修复记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/7-mtp/多bs并发prefill乱码精度问题修复记录.md)
+15. 温度 topK topP 950PR 问题：[temperature_topk_topp_950PR问题记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/7-mtp/temperature_topk_topp_950PR问题记录.md)
+
+**Profiling**
+16. vLLM-Ascend 剖析分析：[01_vllm_ascend_profiling_analysis.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/01_vllm_ascend_profiling_analysis.md)
+17. rtp-llm 剖析现状：[02_rtp_llm_current_profiling_state.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/02_rtp_llm_current_profiling_state.md)
+18. xLLM 剖析分析：[03_xllm_profiling_analysis.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/03_xllm_profiling_analysis.md)
+19. 复用性评估：[04_reuse_assessment.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/04_reuse_assessment.md)
+20. rtp-llm 剖析方案（最终推荐）：[05_rtp_llm_profiling_scheme.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/05_rtp_llm_profiling_scheme.md)
+21. 落地验证记录：[06_validation_record.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/06_validation_record.md)
+22. FIA contiguous 布局分析：[07_fia_contiguous_analysis.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/9-profiling/07_fia_contiguous_analysis.md)
+
+**TP 张量并行**
+23. vLLM-Ascend dense TP 分析：[01_vllm_ascend_dense_tp_analysis.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/10-tp/01_vllm_ascend_dense_tp_analysis.md)
+24. rtp-llm TP 现状与差距：[02_rtp_llm_tp_status_and_gaps.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/10-tp/02_rtp_llm_tp_status_and_gaps.md)
+25. TP 实施方案（最终定稿）：[03_rtp_llm_tp_implementation_plan.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/10-tp/03_rtp_llm_tp_implementation_plan.md)
+26. TP 排障记录：[排障记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/10-tp/排障记录.md)
+
+**多模态（附加，图模式的多模态开门）**
+27. ViT 调研报告（vLLM-Ascend 考证 + rtp-llm 现状）：[01-调研报告.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/11-multimodal/01-调研报告.md)
+28. 多模态实施方案（含全部进度记录）：[02-实施方案.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/11-multimodal/02-实施方案.md)
+
+**通用决策与修复记录**
+29. MRoPE npu_mrope 实现备份：[MRoPE_npu_mrope_实现方案备份.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/MRoPE_npu_mrope_实现方案备份.md)
+30. do_sample 温度除零修复：[Ascend后处理do_sample温度除零精度问题修复记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/Ascend后处理do_sample温度除零精度问题修复记录.md)
+31. getTorchCudaDevice 决策记录：[getTorchCudaDevice改回index=-1的决策记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/getTorchCudaDevice改回index=-1的决策记录.md)
+32. dev_0824 合入全记录：[dev_0824合入问题全记录与代码修改清单.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/dev_0824合入问题全记录与代码修改清单.md)
+
+**上游 PR**
+33. 图模式引擎（18 文件，已合入）：https://github.com/alibaba/rtp-llm/pull/1620
+34. Qwen3.5 全栈：图模式 + MTP + 多模态（3+3 文件）：https://github.com/alibaba/rtp-llm/pull/1666
