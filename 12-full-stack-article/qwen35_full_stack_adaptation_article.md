@@ -1,8 +1,8 @@
 # Qwen3.5-MoE 全特性栈适配：图模式、MTP、Profiling、TP（魏珊）
 
-Qwen3.5-35B-A3B 是 Ascend 适配序列中结构最复杂的模型——30 层 GDN 线性注意力 + 10 层 FIA 全注意力 + MoE 前馈 + 混合 KV 缓存 + 交错 MRoPE，几乎踩中了 NPU 推理引擎的每一个技术深水区。本文记录在该模型上依次落地**图模式（aclgraph）、MTP 投机解码、Profiling、TP 张量并行**四个特性的完整过程：每章遵循统一结构——挑战、目标、策略、实施、结果——与 KV Cache 适配章节（前文）构成完整的技术叙事线。
+Qwen3.5-35B-A3B 或许是我们在 Ascend 上遇到过的结构最复杂的模型。它同时拥有 30 层 GDN 线性注意力、10 层 FIA 全注意力、MoE 前馈、混合 KV 缓存和交错 MRoPE——几乎每一个模块都踩在 NPU 推理引擎的技术深水区里。本文记录四个特性在该模型上依次落地的完整过程：图模式、MTP 投机解码、Profiling 和 TP 张量并行。每章遵循同一结构（挑战、目标、策略、实施、结果），与前文的 KV Cache 适配章节一起，构成一条完整的技术叙事线。
 
-四个特性共享一条主线原则：**NPU 特化代码收敛到最小面积**。图模式的引擎代码放在 `cpp/ascend_graph/` 与 Python `ascend_impl/`，MTP 复用已合入主线的 speculative 框架仅在图捕获侧打补丁，Profiling 只填两处 CUDA-only 缺口，TP 总改动仅 5 个文件约 70 行。最终全栈状态：**图模式 2.3×、图+MTP 2.7×（相对 eager），TPOT 69.7→25.6ms，MMMU 多模态 60.7%，全链路精度与 eager 无回归**。
+四个特性贯穿同一条主线：**让 NPU 特化代码收敛到最小面积**。图模式的引擎代码收在 `cpp/ascend_graph/` 与 Python `ascend_impl/`，MTP 完全复用主线 speculative 框架、只在图捕获侧打补丁，Profiling 只填两处 CUDA-only 的缺口，TP 的全部改动不过 5 个文件、约 70 行。最终的全栈成绩：图模式 2.3 倍加速、叠加 MTP 后 2.7 倍（相对 eager），TPOT 从 69.7ms 降到 25.6ms，多模态 MMMU 60.7%，精度全链路无回归。
 
 ---
 
@@ -10,7 +10,7 @@ Qwen3.5-35B-A3B 是 Ascend 适配序列中结构最复杂的模型——30 层 G
 
 ### 挑战
 
-rtp-llm 原有图模式（CudaGraphRunner）深度绑定 CUDA 语义——`at::cuda::CUDAGraph`、`cudaStreamCaptureModeGlobal`、cuBLAS workspace、图内存池。Ascend 侧不仅没有直接等价物，还有几个特有的深坑：
+rtp-llm 的图模式（CudaGraphRunner）从底层就绑定了 CUDA：`at::cuda::CUDAGraph`、`cudaStreamCaptureModeGlobal`、cuBLAS workspace、图内存池，每一层都依赖 CUDA 运行时。Ascend 没有直接等价物，而且还有几个自己的深坑：
 
 - **torch_npu 的捕获模式语义**：`NPUGraph::capture_begin` 默认 Global 模式拒绝捕获期分配，而 FIA 的 workspace 懒初始化恰恰在捕获体内做首次分配——必须切到 `Relaxed` 模式，代价是"漏录"风险需自行兜底。
 - **GDN 线性注意力的 host 元数据**：fla-npu 的 `npu_causal_conv1d_update` 与 `npu_recurrent_gated_delta_rule` 历史上只收 host int 数组（`.cpu().tolist()` 算页号、构造 host 索引），这些 D2H 同步在捕获区内非法，是 GDN 入图的根本死结。
@@ -19,7 +19,7 @@ rtp-llm 原有图模式（CudaGraphRunner）深度绑定 CUDA 语义——`at::c
 
 ### 目标
 
-decode 阶段完整入图：5 个 batch 档位捕获 + 重放语义正确、greedy 输出与 eager 逐字一致、单流解码从 ~57ms/tok 降到 ~16ms/tok。
+让 decode 阶段完整跑进图里：5 个 batch 档位全部捕获、重放语义正确、greedy 输出与 eager 逐字一致，单流解码从约 57ms/tok 降到 16ms/tok 左右。
 
 ### 策略
 
