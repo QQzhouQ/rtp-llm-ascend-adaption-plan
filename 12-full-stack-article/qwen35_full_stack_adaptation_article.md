@@ -10,6 +10,74 @@ Qwen3.5-35B-A3B 是 Ascend 适配序列中结构最复杂的模型：40 层中 3
 
 ## 一、图模式适配：ACL Graph 捕获与重放
 
+### 1.0 图模式原理
+
+在讲适配之前，先解释什么是"图模式"以及它为什么能加速。
+
+#### 为什么需要图模式
+
+NPU 推理引擎的 decode 阶段每生成一个 token，都要执行一次完整的模型前向——对 Qwen3.5 来说就是 40 层（30 次 GDN + 10 次 FIA）+ MoE 路由 + 采样。**eager 模式下每次前向都是"从零调度"**：Python 逐层调用 → 每个 NPU 算子独立 launch → host 侧逐个等待 → 收集结果 → 返回。
+
+这个过程的性能杀手不是计算本身，而是 **host 侧开销**：
+
+- Python 层调度延迟（逐层逐算子的函数调用、张量元数据构造）
+- 每个 NPU 算子的 launch 开销（API 调用 → 驱动 → 硬件命令下发）
+- host 与 device 之间的隐式同步点（dtype 检查、shape 校验等）
+
+当 batch_size=1（单请求 decode）时，计算本身可能只要 2ms，但 host 侧开销加起来可能 15ms——**大部分时间在"等指令下发"而不是"在算"**。0.6B 的数据证实了这一点：eager 18.6ms/tok → 图模式 6.6ms/tok，节省的 12ms 全是 host 开销。
+
+#### 图模式的核心思想
+
+**把一整次前向录制（capture）成一个"计算图"，之后每次 decode 直接重放（replay）这个图**——跳过全部 Python 调度和算子 launch，一条命令让 NPU 执行整段预录制的操作序列。
+
+这要求解决一个根本矛盾：**图的执行序列是固定的，但每次 decode 的输入数据是变化的**（token ID 不同、KV 位置不同、上下文长度不同）。
+
+解决方案是**固定地址 + 数据刷新**：
+
+```
+捕获期（一次性）：
+  为每个 batch 档位分配一组持久缓冲区（固定设备地址）
+  → 在这些缓冲区上执行一次完整前向，NPU 驱动把整个操作序列录成图
+  → 图内所有算子引用的都是这些缓冲区的地址
+
+重放期（每步 decode）：
+  把新的输入数据写入同一组缓冲区（D2D 拷贝，地址不变）
+  → 一条命令重放图 → NPU 按预录制的序列执行 → 从输出缓冲区读结果
+```
+
+因为地址没变，图内录制的所有指针引用依然有效；因为数据变了，计算结果反映的是新输入。
+
+#### 按档位分桶
+
+decode 的 batch_size 是变化的（1 个请求、3 个请求、8 个请求……）。图的形状（矩阵维度）在捕获时就固定了，所以需要**按 batch 档位捕获多个图**。实际 batch 落到 ≥ 它的最小档位（`lower_bound`）：bs=3 → 用 bs=8 的图，多出的 5 行是 padding 行（填哑值：input_ids=0，ctx=1 指向保留块 0）。默认档位 `{1, 8, 16, 24, 32}`，从大到小捕获（先暴露最大分配失败）。
+
+#### ACL Graph 与 CUDA Graph 的对应
+
+| CUDA 概念 | Ascend 等价 | 差异 |
+|---|---|---|
+| `at::cuda::CUDAGraph` | `c10_npu::NPUGraph` | |
+| `cudaStreamBeginCapture` | `NPUGraph::capture_begin(pool, mode)` | 模式语义不同（见下） |
+| 共享内存池 `cudaGraphExec` | `capture_begin({0,0})` 自动创建独立池 | 每图各自建池，无共享高水位 |
+| `cudaGraphLaunch` | `NPUGraph::replay()` | |
+| 不可捕获操作（host sync 等） | 同样不可捕获 | ACL 对跨流限制更严格 |
+
+#### FIA 图任务：让"固定图"处理"变化长度"
+
+注意力是特殊的难题：`context_lens`（每条序列的 KV 长度）每步都在变，但图内录制的 FIA 调用参数是固定的。直接入图会导致注意力永远用捕获期的旧长度。
+
+FIA v2 提供了**图任务接口**（借鉴 vLLM-Ascend 的用法）：
+
+- 捕获期：`graph_task_group_begin/end` 包住 FIA v2 调用——录制的不是一个固定 kernel，而是一个**可更新的图任务**，内部通过 ExternalEvent 在设备侧留 wait 点
+- 重放期：`update_graph_fia` 在**专用更新流**上以真实 `context_lens` 重发 FIA（`graph_task_update_begin/end`），ExternalEvent 释放 wait 点，图任务的注意力计算用新参数执行
+
+这样图内的注意力每次重放都能看到正确的 KV 长度，且全程无 host 同步。
+
+#### 别名不变式（最关键的约束）
+
+图绑定的是**捕获期张量的设备地址**。这意味着 Python 侧对捕获缓冲的引用必须是零拷贝别名（aliasing）——C++ 每次重放往持久缓冲写入新数据，图内读到同一地址的最新数据。
+
+**任何 out-of-place 操作（如 `tensor.clamp(min=0)`）都会物化一份新张量**：捕获期图绑定的是这份快照的地址，重放时 C++ 更新的是原缓冲，图读到的永远是捕获期的旧值——静默产出错误 token，且短请求回归测不出来（只有一个 KV 块时，种子表值碰巧与真实块 ID 一致）。必须用 in-place `clamp_()`。这是整个图模式中出现过真实回归的最隐蔽约束。
+
 ### 1.1 问题背景
 
 rtp-llm 的图模式（`CudaGraphRunner`）从底层就绑定了 CUDA：`at::cuda::CUDAGraph`、`cudaStreamCaptureModeGlobal`、cuBLAS workspace、图内存池。Ascend 没有直接等价物——`c10_npu::NPUGraph` 有自己的捕获模式体系、内存池语义和流管理方式，而且还有几个 CUDA 世界里不存在的坑。
