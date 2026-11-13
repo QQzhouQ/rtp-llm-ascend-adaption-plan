@@ -190,32 +190,61 @@ graphCaptureEnd → replayAndSyncCheck（sanity 重放 vs eager 预热输出）
 
 ## 二、MTP 投机解码：从 eager 到入图
 
-### 2.1 MTP 的工作原理（以 K=2 为例）
+### 2.0 MTP 原理
 
-一个完整周期分两个阶段共 11 步（编号与流程图一致，prefill 阶段只发生在首个周期）：
+#### 为什么需要 MTP
 
-**阶段一 Prefill（①→④）**：
+decode 的根本瓶颈是**串行性**：每生成一个 token 要跑一次完整的 40 层前向。MTP（Multi-Token Prediction）利用 Qwen3.5 checkpoint 自带的 draft 层（enorm/hnorm/eh_proj + 1 层 MQA decoder，无需单独训练）做**投机解码**：draft 模型很轻（1 层 vs 主模型 40 层），每周期用 draft 快速"猜"出 K 个草稿 token，然后主模型一次前向同时验证 K+1 个 token——用 chain speculative sampling 决定接受多少。理想情况下（草稿全对），一个周期产出 K+1 个 token 但主模型只跑一次前向。
 
-| 步 | 操作 | 执行方式 |
+#### 一个完整周期（K=2，以 prompt "今天天气" 为例）
+
+**阶段一 Prefill（仅首周期，全部 Eager）**：
+
+| 步 | 操作 | 说明 |
 |---|---|---|
-| ① | target prefill：输入 prompt（4 token）→ 写 target KV 位置 0-3 → 输出 hidden h0..h3 + 末位 logits | Eager |
-| ② | target 采样：从位置 3 的 logits 预测位置 4 → 采出 pending token（追加序列但 KV 未写——领先 KV 一个位置） | — |
-| ③ | draft prefill：输入 combo 左移 [今天气不] + target hidden h0..h3 配对 → 写 draft KV 0-3 | Eager |
-| ④ | 写 SP buffer（hidden 与 KV 的桥梁） | — |
+| ① | target prefill：4 token 前向 | 写 target KV 0-3；输出 hidden h0..h3 + 末位 logits |
+| ② | target 采样 | 采出 **pending token**「不」——追加进序列但 KV 未写（领先 KV 一个位置） |
+| ③ | draft prefill：combo 左移 [天 天 气 不] + hidden 配对 | (词,上文hidden)：(天,h0)(天,h1)(气,h2)(不,h3)——仅末位预测用作草稿 → 草稿1=「错」 |
+| ④ | 写 SP buffer | tokens=[不,错]、hidden=d1——draft 与 target 之间的桥梁 |
 
-**阶段二 Decode（⑤→⑪）**：
+**阶段二 Decode（每周期重复）**：
 
-| 步 | 操作 | 执行方式 |
-|---|---|---|
-| ⑤ | draft decode 循环 ×(K-1)=1：输入 (上一步草稿, 对应 hidden) → 草稿2 | **ACL Graph** |
-| ⑥ | 拼 verify 输入 [pending, 草稿1, 草稿2]（K+1=3 个 token） | — |
-| ⑦ | target verify：一次前向 3 token → 写 KV + 输出每 token logits + GDN 逐 token 状态快照 | **ACL Graph** |
-| ⑧ | chain speculative sampling：逐 token 判定接受/拒绝 → 确定本轮产出 | 图外（纯 torch） |
-| ⑨ | target 采样被接受末位 → bonus token | — |
-| ⑩ | draft 重打头：用被接受的真实 token 覆写 draft KV 的草稿位置 | — |
-| ⑪ | 下一周期的 pending = bonus（或被接受末位），回到 ⑤ | — |
+| 步 | 操作 | 执行方式 | 说明 |
+|---|---|---|---|
+| ⑤ | draft decode ×(K-1)=1 | **ACL Graph** | 输入(草稿1=错, d1)，draft 自回归推进 → 草稿2=「很」 |
+| ⑥ | 拼 verify 输入 | — | [pending「不」, 草稿1「错」, 草稿2「很」]（K+1=3 token） |
+| ⑦ | target verify：3 token 一次前向 | **ACL Graph** | 写 target KV 4-6；输出 3 份 logits + hidden 行 0-2 |
+| ⑧ | chain speculative sampling | 图外纯 torch | 逐位判定 `u·P_draft < P_target`；全接受→pos=K=2，末位替换为 target 采样→bonus=「棒」；accept=[错,很,棒] |
+| ⑨ | 截断与回滚 | — | combo/hidden 按 accept_len 截取；被拒路径的 KV 靠"下周期直接覆盖"回收，无需显式删除 |
+| ⑩ | draft 重打头（ragged） | **Eager** | 输入(accept 全部, verify hidden 前 accept_len 行)；覆写 draft KV 4-6；末位预测→下周期草稿1=「好」 |
+| ⑪ | specUpdate | — | 序列=今天天气不错很棒（长10）；SP buffer=[棒,好]→下周期（「棒」成为新 pending） |
 
 **不变式**：序列长度 = KV 有效长度 + 1（领先的一个 = pending token，下周期作为 verify 输入首位补写 KV）。
+
+**截断场景的关键差异**（部分接受）：第 ⑧ 步某位被拒时，该位之后所有草稿的 KV 成残留（红底标记），下周期新 pending 直接覆写回收；hidden 截取从 accept_len=3 行变为 2 行；draft KV 同理被 ⑩ 重打头覆写。
+
+#### hidden 的三条链路
+
+| 环节 | hidden 来源 | 配对语义 |
+|---|---|---|
+| ③ draft prefill | target prefill 输出 h0..h3 | combo 左移后同下标配对 (天,h0)(天,h1)(气,h2)(不,h3)，仅末位预测用作草稿 |
+| ⑤ draft 循环 | draft 自己上步输出 d1/d2 | (草稿i, di) 链式自回归 |
+| ⑦→⑩ 重打头 | verify 输出 hidden 前 accept_len 行 | (accept[j], verify_hidden[j]) 天然错位对齐，无需左移；全接受取 3 行、截断取 2 行 |
+
+#### KV：同一 block 池内的双份布局
+
+draft 层以全局层号追加在主模型层之后，主模型与 draft **共享 block 池**、块内按层偏移划分。MtpExecutor 持有两张寻址表（target/draft `kv_cache_layer_to_group`），每次 forward 前切换。target 与 draft 的 KV 池在逻辑上完全独立。
+
+### 2.1 图决策：decode-only 矩阵
+
+| 前向 | 执行方式 | 形状 | 原因 |
+|---|---|---|---|
+| target verify（⑦） | ACL Graph | 每流 K+1 token | 固定 batch bucket 可捕获 |
+| draft decode 循环（⑤） | ACL Graph | 每流 1 token | 与普通 decode 图同构 |
+| target prefill（①）/ draft prefill（③） | Eager | 长度可变 | 不固定不可捕获 |
+| draft 重打头（⑩） | Eager | 长度=accept_len ∈ [1,K+1] | ragged 长度需 pad 方案，当前 eager 代价已含在 10.3ms 成绩内 |
+
+关键修正：基线对 SP 模型一刀切 `num_tokens_per_bs = K+1`——draft 实例也按 K+1 捕获，与其每流 1 token 的真实输入错配（图不可用）。改为按 `!model_id` 区分：target=K+1、draft=1，draft 图由此可用。
 
 ### 2.2 挑战
 
@@ -245,16 +274,36 @@ verify 一次 K+1 token 需要逐 token 写状态快照（回滚基础：接受�
 
 选择逐步而非单 launch 的原因：fla-npu 的多 token 单 launch 写错中间页 BF16 快照——同输入对拍 state 偏差 ~1e3（上游算子 bug，绕开而非等待修复）。状态页索引（读页/每 token 写页）在 device 侧计算，可入图。
 
-### 2.6 图外保护点（流程图看不到的）
+### 2.7 步骤与代码对照
 
-| 保护点 | 位置 | 原因 |
+| 步 | 环节 | 执行方式 | 代码入口 |
+|---|---|---|---|
+| ① | target prefill | Eager | `MtpExecutor::prefillStep` → `model_->forward` |
+| ② | target 采样（产 pending） | 图外 | `Sampler::forward` |
+| ③ | draft prefill（combo 左移 + hidden 配对） | Eager | `updatePrefillPostDraftModelInput` → `draft_model_->forward` |
+| ④ | 写 SP buffer | — | `GenerateStream::specUpdate` |
+| ⑤ | draft decode 循环 ×(K-1) | **ACL Graph** | `MtpExecutor::draftModelDecode` |
+| ⑥ | 拼 verify 输入 [pending, 草稿…] | — | `draftModelDecode` 末尾 |
+| ⑦ | target verify（K+1 一次前向） | **ACL Graph** | `model_->forward(is_target_verify=true)` |
+| ⑧ | chain speculative sampling | 图外 | `SpeculativeSampler::batchSample` → `CudaSampleOp.cc` |
+| ⑨ | 截断与回滚（combo/hidden 按 accept_len 截取） | — | `updateDecodePostDraftModelInput` |
+| ⑩ | draft 重打头（ragged 多 token） | Eager | `draft_model_->forward`（fallback 路径） |
+| ⑪ | specUpdate 回写 | — | `prepareDecodeSpecUpdateInfo` → `specUpdate` |
+
+### 2.8 图外保护点（流程图看不到的）
+
+| 保护点 | 位置 | 存在原因 |
 |---|---|---|
-| runner 回放双守卫 | `ascend_graph_runner.cc:prepareInputs` | verify 输入的 sequence_lengths 为空张量（MtpExecutor 置 empty），位置语义全部由 `sequence_lengths_plus_1_device` 承载；空表校验 + ntp 端点 clamp |
-| SP hidden 并发聚合 | `CudaOps.cc:multiMergeCopy` | decode 并发 ≥8 时 SP hidden 聚合：基线 host `std::memcpy` 直接解引用 NPU device 指针属非法，改为逐段 `aclrtMemcpyAsync` D2D |
-| per-token gather 连续性 | `paged_state.speculative_state_indices` | triton 页迁移 kernel 以裸指针线性读索引，无法消费 strided 视图——写页按 token 独立 gather 成 list[T]，每个切片天然连续 |
-| 共享 cache 层零改动 | 不修改 KVCacheManager | layout 全长度问题（getMainModelCacheLayerLayout 返回含 draft 层的全长度）的一次性 memcpy 多写约 8 字节落入对齐 slack，实践无害 |
+| **runner 回放双守卫** | `ascend_graph_runner.cc:prepareInputs` | ① verify 输入的 sequence_lengths 是空张量（MtpExecutor 置 empty({0})），slice/copy 因 numel=0 崩溃——守卫跳过拷贝；② 基线无条件用 sequence_lengths+1 重算 sequence_lengths_plus_1_d，会覆盖上游已填好的 verify 正确值——守卫 `!is_target_verify` 才重算 |
+| **跳过 sp_prefill_draft_model_** | `MtpExecutor.cc` | CUDA 上该实例持有 draft 重打头的 K+1 prefill 图；Ascend decode-only 下该图不存在，`#if USING_ASCEND` 跳过创建。重打头不误入 draft decode 图：其输入为 prefill 形态，被 `canRun` 的 `is_prefill` 检查拒绝 |
+| **layer_to_group min 截断** | `ascend_graph_runner.cc` | 构造传的是引擎级全长度 layer_to_groups（target+draft=42 层），回放输入是 executor 切换表（本模型 40 层）——裸 copy_ 直接抛 42 vs 40 尺寸不匹配。按公共宽度 slice 拷贝，截断无损语义 |
+| **generator 设备守卫** | `SpeculativeSampler.cc` | NPU 上 GenerateStream 只建 CPU generator，`torch::rand(CPU gen + NPU device)` 抛 device-mismatch——投机解码+random_seed 组合崩引擎。守卫跳过设备不匹配行（接受序列退化为不可复现） |
+| **multiMergeCopy D2D** | `CudaOps.cc` | decode 并发 ≥8 时 SP hidden 聚合：基线 host `std::memcpy` 直接解引用 NPU device 指针属非法，改为逐段 `aclrtMemcpyAsync` D2D |
+| **per-token gather 连续性** | `paged_state.speculative_state_indices` | triton 页迁移 kernel 以裸指针线性读索引，无法消费 strided 视图——写页按 token 独立 gather 成 list[T]，每片天然连续 |
+| **逐步 T==1 的 seq_lengths 复用** | `recurrent.py` | 循环内每 token 复用缓存的 [0,1,1,...] device 张量，整环无 host 同步、可被 ACL Graph 捕获 |
+| **共享 cache 层零改动** | 不修改 KVCacheManager | layout 全长度问题（getMainModelCacheLayerLayout 返回含 draft 层的全长度）的一次性 memcpy 多写约 8 字节落入对齐 slack，实践无害——不为 1~2% 显存改共享语义 |
 
-### 2.7 结果
+### 2.9 结果
 
 | 配置 | TPOT avg | 相对 eager | MTP 接受率 |
 |---|---|---|---|
@@ -264,6 +313,24 @@ verify 一次 K+1 token 需要逐 token 写状态快照（回滚基础：接受�
 | graph+MTP(K=3) | 26.6ms | 2.62× | 56.0% |
 
 K=2 在此接受率下反而优于 K=3：K=3 的接受率增量（51.5→56.0%）不足以覆盖 verify 一次前传 K+1=4 token 的开销增量。开环 Poisson 负载（真实用户延迟）下中位 TTFT < 0.3s（闭环几十秒 TTFT 是饱和排队而非服务缺陷），接受率与负载无关（~51.5% 恒定）。
+
+单流（concurrency=1，K=2）的四档对比：
+
+| 配置 | TPOT (ms/token) | 单流 TPS | 相对 eager |
+|---|---|---|---|
+| eager | 56.7 | 17.6 | 1.0× |
+| eager + MTP | 34.8 | 28.7 | 1.63× |
+| graph | 15.3 | 65.3 | 3.70× |
+| **graph + MTP** | **10.3** | **97.3** | **5.52×** |
+
+### 2.10 已知限制与后续方向
+
+| 项 | 状态 |
+|---|---|
+| draft 重打头入图 | 未做——ragged 长度需 pad 方案，当前 eager 代价已包含在 10.3ms 成绩内 |
+| random_seed 请求 | NPU 上接受判定不可复现（见 generator 守卫），不崩溃 |
+| fla-npu 单 launch 多 token | 上游 kernel bug 规避中（逐步 T==1），上游修复后可回退 |
+| cache 层 memcpy 微越界 | 与上游一致的技术债，建议上游统一根治 |
 
 ---
 
