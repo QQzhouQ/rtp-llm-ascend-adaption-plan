@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RTP-LLM-NPU 端到端链路拆解 · Qwen3.5-35B-A3B</title>
+<style>
+  :root{
+    --bg:#f4f6f8;
+    --surface:#ffffff;
+    --surface-2:#fbfcfd;
+    --ink:#0f172a;
+    --ink-2:#334155;
+    --muted:#64748b;
+    --line:#e2e8f0;
+    --brand:#0f766e;
+    --brand-2:#0e7490;
+    --brand-soft:#e6f4f1;
+    --amber:#b45309;
+    --amber-soft:#fef3c7;
+    --rose:#be123c;
+    --rose-soft:#ffe4e6;
+    --blue-soft:#e0f2fe;
+    --code-bg:#0b1220;
+    --code-ink:#dbeafe;
+    --radius:14px;
+    --shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.06);
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .progress{
+    position:fixed;top:0;left:0;height:3px;width:0;
+    background:linear-gradient(90deg,var(--brand),#22d3ee,var(--amber));
+    z-index:60;transition:width .12s linear;
+  }
+  .layout{max-width:1320px;margin:0 auto;padding:0 24px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:34px}
+  /* ---------- TOC ---------- */
+  .toc{
+    position:sticky;top:0;align-self:start;height:100vh;overflow:auto;
+    padding:30px 0 40px;font-size:13px;
+  }
+  .toc .brand-mini{display:flex;align-items:center;gap:10px;margin-bottom:22px}
+  .toc .brand-mini .mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(140deg,#0f766e,#0891b2);display:grid;place-items:center;color:#fff;font-weight:800;font-size:13px}
+  .toc .brand-mini b{font-size:13px;letter-spacing:.02em}
+  .toc .brand-mini span{display:block;color:var(--muted);font-size:11px;font-weight:400;margin-top:1px}
+  .toc a{
+    display:block;padding:7px 12px;border-radius:8px;color:var(--ink-2);
+    border-left:2px solid transparent;line-height:1.4;
+  }
+  .toc a .n{color:#94a3b8;font-family:var(--mono);font-size:11px;margin-right:7px}
+  .toc a:hover{background:#eef2f4;text-decoration:none}
+  .toc a.active{background:var(--brand-soft);border-left-color:var(--brand);color:var(--brand);font-weight:600}
+  .toc .toc-group{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line);color:#94a3b8;font-size:11px;letter-spacing:.08em;padding-left:12px}
+  /* ---------- main ---------- */
+  main{padding:26px 0 120px;min-width:0}
+  .hero{
+    position:relative;overflow:hidden;border:1px solid var(--line);border-radius:20px;
+    background:
+      radial-gradient(1100px 500px at 12% -20%,#d9f4ef 0%,transparent 60%),
+      radial-gradient(900px 420px at 100% 0%,#e0f2fe 0%,transparent 55%),
+      #fff;
+    box-shadow:var(--shadow);padding:34px 38px 30px;margin-bottom:30px;
+  }
+  .hero:before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:linear-gradient(rgba(15,118,110,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(15,118,110,.06) 1px,transparent 1px);
+    background-size:34px 34px;
+    mask-image:radial-gradient(circle at 70% 0%,#000 0%,transparent 70%);
+  }
+  .hero>*{position:relative}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:11.5px;letter-spacing:.12em;color:var(--brand);font-weight:700;text-transform:uppercase}
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--brand);box-shadow:0 0 0 4px rgba(15,118,110,.12)}
+  h1{font-size:clamp(25px,3vw,36px);line-height:1.25;margin:14px 0 10px;letter-spacing:-.02em}
+  h1 small{display:block;font-size:15px;font-weight:500;color:var(--ink-2);letter-spacing:0;margin-top:10px}
+  .hero p.lead{margin:12px 0 0;color:var(--ink-2);font-size:14.5px;max-width:780px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+    background:#fff;border:1px solid var(--line);font-size:12px;color:var(--ink-2);font-family:var(--mono);
+  }
+  .chip b{color:var(--ink);font-family:system-ui,sans-serif;font-weight:600}
+  .chip.teal{background:var(--brand-soft);border-color:#bfe5df;color:#0b5a54}
+  .chip.amber{background:var(--amber-soft);border-color:#fde68a;color:#92400e}
+  .chip.blue{background:var(--blue-soft);border-color:#bae6fd;color:#075985}
+  .meta-row{display:flex;flex-wrap:wrap;gap:18px;margin-top:22px;padding-top:18px;border-top:1px dashed var(--line);font-size:12px;color:var(--muted)}
+  .meta-row b{color:var(--ink-2)}
+  /* ---------- flow rail ---------- */
+  .flow-wrap{margin:26px 0 34px;padding:24px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .flow-head{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:18px}
+  .flow-head h3{margin:0;font-size:14px}
+  .flow-head span{font-size:11.5px;color:var(--muted)}
+  .rail{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:0;align-items:stretch}
+  .node{position:relative;padding:12px 10px 13px;border:1px solid var(--line);background:var(--surface-2);border-radius:10px;min-width:0}
+  .node:not(:last-child){margin-right:14px}
+  .node:not(:last-child):after{
+    content:"";position:absolute;top:50%;right:-12px;width:10px;height:1px;background:#cbd5e1;
+  }
+  .node:not(:last-child):before{
+    content:"";position:absolute;top:calc(50% - 3px);right:-13px;
+    border-left:5px solid #cbd5e1;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;
+  }
+  .node .idx{font-family:var(--mono);font-size:10px;color:#94a3b8;letter-spacing:.05em}
+  .node .name{font-size:12.5px;font-weight:650;line-height:1.35;margin:4px 0 3px}
+  .node .sub{font-size:10.5px;color:var(--muted);line-height:1.35;word-break:break-word}
+  .node.hl{background:linear-gradient(180deg,#d1fae5,#f8fffd);border-color:#6ee7b7}
+  .node.hl .name{color:#065f46}
+  .node.hl .idx{color:#059669}
+  .node.core{background:linear-gradient(180deg,#ffe4cc,#fffaf5);border-color:#fdba74}
+  .node.core .name{color:#9a3412}
+  .node.core .idx{color:#c2410c}
+  .node.npu{background:linear-gradient(180deg,#dbeafe,#f8fbff);border-color:#93c5fd}
+  .node.npu .name{color:#1e40af}
+  .node.npu .idx{color:#60a5fa}
+  /* ---------- sections ---------- */
+  section{scroll-margin-top:22px;margin-bottom:54px}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin:0 0 8px}
+  .sec-num{font-family:var(--mono);font-size:12px;color:#fff;background:linear-gradient(140deg,#0f766e,#0e7490);padding:5px 9px;border-radius:8px;letter-spacing:.04em;flex:none}
+  h2{font-size:clamp(20px,2.3vw,26px);margin:0;letter-spacing:-.015em;line-height:1.3}
+  .sec-desc{color:var(--muted);font-size:13px;margin:0 0 20px;max-width:820px}
+  h3{font-size:16px;margin:26px 0 10px;letter-spacing:-.01em}
+  h4{font-size:13.5px;margin:18px 0 8px;color:var(--ink-2)}
+  p{font-size:14px;color:var(--ink-2);margin:10px 0}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow);margin:14px 0}
+  .card.tight{padding:16px 18px}
+  .card h4{margin-top:0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .kpi .v{font-family:var(--mono);font-size:19px;font-weight:700;color:var(--brand);line-height:1.2}
+  .kpi .k{font-size:11.5px;color:var(--muted);margin-top:4px}
+  /* ---------- code ---------- */
+  .code{
+    margin:14px 0;border-radius:12px;overflow:hidden;border:1px solid #1e293b;background:var(--code-bg);
+    box-shadow:0 8px 20px rgba(2,6,23,.14);
+  }
+  .code-bar{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:8px 12px;background:#111c33;border-bottom:1px solid #1e293b;
+  }
+  .code-bar .path{font-family:var(--mono);font-size:11px;color:#93c5fd;word-break:break-all}
+  .code-bar .lines{font-family:var(--mono);font-size:10.5px;color:#fcd34d;background:#1c2b4a;border:1px solid #24365c;padding:2px 7px;border-radius:6px;white-space:nowrap}
+  pre{margin:0;padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.65;color:var(--code-ink)}
+  pre .c{color:#7f9cc0}
+  pre .s{color:#a7f3d0}
+  pre .k{color:#fca5a5}
+  pre .f{color:#fcd34d}
+  pre .n{color:#93c5fd}
+  /* ---------- tables ---------- */
+  .tbl-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
+  table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:640px}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f1f5f9;color:#334155;font-weight:650;font-size:11.5px;letter-spacing:.03em;position:sticky;top:0;z-index:1}
+  tr:last-child td{border-bottom:none}
+  td .mono,th .mono{font-family:var(--mono);font-size:11.5px;color:#0f172a}
+  span.mono{
+    font-family:var(--mono);font-size:.88em;color:#0b3b36;
+    background:#f1f7f6;border:1px solid #dfeeec;border-radius:4px;
+    padding:0 4px;word-break:break-word;
+  }
+  td.num{font-family:var(--mono);color:var(--muted);white-space:nowrap}
+  .tag{display:inline-block;padding:2px 7px;border-radius:5px;font-size:10.5px;font-weight:650;font-family:var(--mono);white-space:nowrap}
+  .tag.py{background:#ede9fe;color:#5b21b6}
+  .tag.cc{background:#e0f2fe;color:#075985}
+  .tag.npu{background:#dcfce7;color:#166534}
+  .tag.quant{background:#fef3c7;color:#92400e}
+  .tag.cfg{background:#ffe4e6;color:#9f1239}
+  /* ---------- callouts ---------- */
+  .note{border-left:3px solid var(--brand);background:#f0fdfa;border-radius:0 10px 10px 0;padding:13px 16px;margin:14px 0;font-size:13px;color:#134e4a}
+  .note.warn{border-color:var(--amber);background:#fffbeb;color:#78350f}
+  .note.risk{border-color:var(--rose);background:#fff1f2;color:#881337}
+  .note b{color:inherit}
+  .note .t{display:block;font-weight:700;margin-bottom:3px;font-size:12px;letter-spacing:.02em}
+  /* ---------- layer strip ---------- */
+  .strip-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow)}
+  .strip{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:5px;margin:14px 0 10px}
+  .lay{height:40px;border-radius:6px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;border:1px solid;position:relative}
+  .lay.gdn{background:#d1fae5;border-color:#6ee7b7;color:#065f46}
+  .lay.attn{background:#fed7aa;border-color:#fdba74;color:#7c2d12}
+  .lay:hover{transform:translateY(-1px)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+  .legend .g{background:#d1fae5;border:1px solid #6ee7b7}
+  .legend .a{background:#fed7aa;border:1px solid #fdba74}
+  /* ---------- chain ---------- */
+  .chain{display:flex;flex-direction:column;gap:0;margin:12px 0}
+  .step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;position:relative}
+  .step:not(:last-child){padding-bottom:14px}
+  .step:not(:last-child):before{content:"";position:absolute;left:16px;top:32px;bottom:2px;width:2px;background:#dbeafe}
+  .step .idx{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:700;background:#e0f2fe;color:#075985;border:1px solid #bae6fd;z-index:1}
+  .step .body{padding:5px 0 0}
+  .step .body b{font-size:13px;display:block;line-height:1.35}
+  .step .body span{font-size:11.5px;color:var(--muted);display:block;margin-top:2px}
+  .step .body .op{font-family:var(--mono);font-size:11px;color:#0f766e;background:#f0fdfa;border:1px solid #ccfbf1;border-radius:5px;padding:1px 6px;display:inline-block;margin-top:5px}
+  /* ---------- sequence ---------- */
+  .seq{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+  .seq-row{display:grid;grid-template-columns:120px 150px 1fr;font-size:12px}
+  .seq-row>div{padding:10px 12px;border-bottom:1px solid var(--line)}
+  .seq-row:last-child>div{border-bottom:none}
+  .seq-row.head{background:#f1f5f9;font-weight:650;color:#334155;font-size:11.5px}
+  .seq-row .who{font-family:var(--mono);font-size:11px;color:#0e7490}
+  .seq-row.pref{background:#f7fdfb}
+  .seq-row.deco{background:#fffcfa}
+  /* ---------- misc ---------- */
+  .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 16px;font-size:13px;margin:8px 0}
+  .kv dt{color:var(--muted);font-size:12px}
+  .kv dd{margin:0;color:var(--ink-2)}
+  .footer{border-top:1px dashed var(--line);padding-top:18px;color:var(--muted);font-size:11.5px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .backtop{position:fixed;right:22px;bottom:22px;width:38px;height:38px;border-radius:50%;background:#fff;border:1px solid var(--line);display:grid;place-items:center;box-shadow:var(--shadow);color:var(--brand);font-size:16px;z-index:20}
+  .backtop:hover{text-decoration:none;background:var(--brand-soft)}
+  @media (max-width:1080px){
+    .layout{grid-template-columns:1fr;padding:0 18px}
+    .toc{position:relative;height:auto;padding:18px 0 4px;display:none}
+    .rail{grid-template-columns:repeat(5,minmax(0,1fr))}
+    .node:nth-child(5):after,.node:nth-child(5):before{display:none}
+    .grid2,.grid3{grid-template-columns:1fr}
+  }
+  @media (max-width:620px){
+    .hero{padding:24px 20px}
+    .rail{grid-template-columns:1fr}
+    .node:not(:last-child){margin:0 0 12px}
+    .node:not(:last-child):after,.node:not(:last-child):before{display:none}
+    .strip{grid-template-columns:repeat(8,minmax(0,1fr))}
+    .seq-row{grid-template-columns:1fr;gap:0}
+    .seq-row>div{border-bottom:none;padding:6px 12px}
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="layout">
+  <aside class="toc" id="toc">
+    <div class="brand-mini">
+      <div class="mark">RTP</div>
+      <div><b>NPU 推理链路拆解</b><span>Qwen3.5-35B-A3B</span></div>
+    </div>
+    <a href="#overview"><span class="n">00</span>全景：一次请求的十步</a>
+    <a href="#deploy"><span class="n">01</span>部署形态与进程模型</a>
+    <a href="#http"><span class="n">02</span>HTTP 接入与 OpenAI 适配</a>
+    <a href="#enqueue"><span class="n">03</span>请求编排与入队</a>
+    <a href="#engine"><span class="n">04</span>RPC、调度与 C++ 引擎</a>
+    <a href="#model"><span class="n">05</span>模型前向：35B-A3B</a>
+    <a href="#ops"><span class="n">06</span>昇腾算子映射</a>
+    <a href="#timeline"><span class="n">07</span>Prefill / Decode 时序</a>
+    <a href="#kv"><span class="n">08</span>KV Cache 与混合状态</a>
+    <a href="#quant"><span class="n">09</span>量化与权重加载</a>
+    <a href="#limits"><span class="n">10</span>昇腾侧约束与默认值</a>
+    <a href="#index"><span class="n">11</span>代码索引</a>
+    <a href="#verify"><span class="n">12</span>快速验证</a>
+  </aside>
+
+  <main>
+    <!-- HERO -->
+    <header class="hero">
+      <div class="eyebrow"><span class="dot"></span>End-to-End Walkthrough</div>
+      <h1>RTP-LLM-NPU 端到端推理链路拆解
+        <small>以 Qwen3.5-35B-A3B（GDN + Full Attention 混合 MoE）为例，从 HTTP 请求到 token 流式输出</small>
+      </h1>
+      <p class="lead">本页按“服务层 → 引擎层 → 模型层 → 算子层”逐段拆解 <code>rtp_llm/</code> 的真实调用链，每个关键节点都标注了源码文件与行号。文中以单卡 TP=1、W8A8_MXFP8 权重的部署形态为基准；其他并行/量化形态共用同一条主链路，差异集中在算子选择与集合通信上。</p>
+      <div class="chips">
+        <span class="chip teal"><b>模型</b> Qwen3.5-35B-A3B</span>
+        <span class="chip blue"><b>架构</b> 30 × GDN + 10 × Full Attn</span>
+        <span class="chip amber"><b>MoE</b> 256 experts / top-8</span>
+        <span class="chip"><b>权重</b> W8A8_MXFP8</span>
+        <span class="chip"><b>部署</b> Ascend NPU · TP=1</span>
+      </div>
+      <div class="meta-row">
+        <span><b>代码基线</b> /mnt/docker/w30060538/rtp-llm-npu</span>
+        <span><b>模型配置</b> /mnt/docker/weights/Qwen3.5-35B-A3B/config.json</span>
+        <span><b>整理日期</b> 2026-11-06</span>
+        <span><b>版本</b> v0.1</span>
+      </div>
+    </header>
+
+    <!-- 00 OVERVIEW -->
+    <section id="overview">
+      <div class="sec-head"><span class="sec-num">00</span><h2>全景：一次请求的十步</h2></div>
+      <p class="sec-desc">先建立整体心智模型：RTP-LLM 采用“Python 服务层 + C++ 引擎层 + Python 模型层”的分层结构。HTTP 由前端进程接收，请求经 gRPC 进入后端引擎；C++ 负责调度、组 batch、KV Cache 管理与采样，模型前向由 <span class="mono">models_py</span> 中的 PyTorch 模型执行，最终逐 step 把 token 回传前端并转成 SSE。</p>
+
+      <div class="flow-wrap">
+        <div class="flow-head">
+          <h3>主链路：HTTP → Token</h3>
+          <span>绿色为 Python 服务层，橙色为 C++ 引擎 / RPC 层，蓝色为模型执行层（NPU），浅灰为客户端入口</span>
+        </div>
+        <div class="rail">
+          <div class="node"><div class="idx">01</div><div class="name">Client</div><div class="sub">/v1/chat/completions</div></div>
+          <div class="node hl"><div class="idx">02</div><div class="name">FastAPI</div><div class="sub">frontend_app.py</div></div>
+          <div class="node hl"><div class="idx">03</div><div class="name">OpenAI 适配</div><div class="sub">renderer + GenerateConfig</div></div>
+          <div class="node hl"><div class="idx">04</div><div class="name">入队</div><div class="sub">BackendRPCServerVisitor</div></div>
+          <div class="node core"><div class="idx">05</div><div class="name">gRPC</div><div class="sub">ModelRpcClient</div></div>
+          <div class="node core"><div class="idx">06</div><div class="name">引擎调度</div><div class="sub">NormalEngine / FIFO</div></div>
+          <div class="node core"><div class="idx">07</div><div class="name">组 Batch</div><div class="sub">NormalExecutor</div></div>
+          <div class="node npu"><div class="idx">08</div><div class="name">模型前向</div><div class="sub">PyWrappedModel → PyTorch</div></div>
+          <div class="node core"><div class="idx">09</div><div class="name">采样</div><div class="sub">Sampler / CANN</div></div>
+          <div class="node hl"><div class="idx">10</div><div class="name">SSE 输出</div><div class="sub">data: chunk</div></div>
+        </div>
+      </div>
+
+      <div class="grid3">
+        <div class="kpi"><div class="v">1 + N + N</div><div class="k">1 个 backend + N 个 frontend + N 个 dash_sc（N=frontend_server_count，默认 4）</div></div>
+        <div class="kpi"><div class="v">1 次 prefill + N 次 decode</div><div class="k">C++ 层按 prefill / decode 分离组 batch</div></div>
+        <div class="kpi"><div class="v">40 × Layer</div><div class="k">10 次 full attention，30 次 GDN 线性注意力</div></div>
+      </div>
+
+      <div class="note">
+        <span class="t">关键分界点</span>
+        Python 前端只做“协议/分词/渲染”和“流式文本拼装”；真正的 batch 调度、KV Cache 分配、采样和停止条件判断都在 C++ 引擎（<span class="mono">rtp_llm/cpp/</span>）。模型计算在 <span class="mono">rtp_llm/models_py/</span>，由 <span class="mono">PyWrappedModel</span> 通过 pybind 调用。
+      </div>
+    </section>
+
+    <!-- 01 DEPLOY -->
+    <section id="deploy">
+      <div class="sec-head"><span class="sec-num">01</span><h2>部署形态与进程模型</h2></div>
+      <p class="sec-desc">默认 <span class="mono">python -m rtp_llm.start_server</span> 会同时拉起 backend、frontend（以及 dash_sc）进程，通过进程间健康检查握手。以 35B 的启动脚本为例：单卡、端口 19000、<span class="mono">model_type=qwen35_moe</span>。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:120px">进程</th><th style="width:260px">入口</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>主进程</b></td>
+              <td class="mono">rtp_llm/start_server.py:616<br>start_server.py:687-719</td>
+              <td>解析参数、初始化并发控制器；派生 backend/frontend/dash_sc 子进程，并等待健康检查完成。</td>
+            </tr>
+            <tr>
+              <td><b>frontend</b></td>
+              <td class="mono">start_frontend_server.py:35-72<br>frontend/frontend_app.py</td>
+              <td>FastAPI/uvicorn HTTP 服务；持有 tokenizer、renderer、<span class="mono">Pipeline</span> 与 gRPC 客户端；负责 SSE 输出。</td>
+            </tr>
+            <tr>
+              <td><b>backend</b></td>
+              <td class="mono">start_backend_server.py:83-124<br>server/backend_manager.py:44-100</td>
+              <td>加载权重、构造 <span class="mono">ModelConfig</span> / <span class="mono">EngineConfig</span>，创建 C++ <span class="mono">NormalEngine</span> 与 Python 模型，绑定 NPU 设备。</td>
+            </tr>
+            <tr>
+              <td><b>dash_sc</b></td>
+              <td class="mono">start_dash_sc_server.py<br>dash_sc/app.py:639-760</td>
+              <td><b>DashScope 兼容的 gRPC 推理入口</b>：实现 <span class="mono">predict_v2.proto</span> 的 <span class="mono">GRPCInferenceService.ModelStreamInfer</span>（服务端流式），与 HTTP 前端并行监听 <span class="mono">base+8</span>。默认随每个 frontend 实例启动；OpenAI 请求不经过它。支持 proxy 模式（<span class="mono">DASH_SC_GRPC_PROXY_MODE</span>）。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <span class="t">DashSc 与 OpenAI 前端的关系</span>
+        DashSc 不是调度器，也不是健康检查进程，而是第二条协议入口：请求经 <span class="mono">DashScInferenceServicer.ModelStreamInfer</span> 解析后，同样调用 <span class="mono">backend_visitor.enqueue</span> 进入同一个 C++ 引擎。35B 的 OpenAI curl 测试不会经过它；其端口为 <span class="mono">start_port + rank_id * worker_info_port_num + 8</span>（19000 部署即 19008）。详见 <span class="mono">docs/backend/DashSc-gRPC.md</span>。
+      </div>
+
+      <h3>1.1 35B 的实际启动参数</h3>
+      <p>来自 <span class="mono">rtp-llm-porting/docs/测试方案设计/scripts-qwen3.5-35B/start_server.sh</span> 与使用速查文档：</p>
+      <div class="code">
+        <div class="code-bar"><span class="path">scripts-qwen3.5-35B/start_server.sh</span><span class="lines">L43-70</span></div>
+        <pre><span class="c"># 35B 混合架构必需参数（脚本内硬编码）</span>
+ENABLE_CUDA_GRAPH=<span class="s">false</span>
+KV_CACHE_MEM_MB=<span class="s">8192</span>
+SEQ_SIZE_PER_BLOCK=<span class="s">512</span>
+KERNEL_SEQ_SIZE_PER_BLOCK=<span class="s">512</span>
+
+python -m rtp_llm.start_server \
+  --checkpoint_path=/mnt/docker/weights/Qwen3.5-35B-A3B-W8A8-MXFP8 \
+  --tokenizer_path=/mnt/docker/weights/Qwen3.5-35B-A3B \
+  --model_type <span class="s">qwen35_moe</span> --start_port <span class="s">19000</span> \
+  --enable_cuda_graph=<span class="s">false</span> --kv_cache_mem_mb=<span class="s">8192</span> \
+  --seq_size_per_block=<span class="s">512</span> --kernel_seq_size_per_block=<span class="s">512</span></pre>
+      </div>
+      <div class="note warn">
+        <span class="t">为什么是 512/512</span>
+        该分支 <span class="mono">OpDefs.h</span> 断言当前不支持 kernel 块细分，物理块与 kernel 块的 ratio 必须为 1；512/512 是 35B 混合架构下唯一可行配置。注意 <span class="mono">server_config_setup.py:432-434</span> 对普通 Ascend 场景默认给 128（FIA v2 推荐），两者不要混淆。
+      </div>
+
+      <h3>1.2 设备选择与 NPU 识别</h3>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>设备发现</h4>
+          <p><span class="mono">rtp_llm/device/device_type.py:7-65</span>：通过 <span class="mono">torch_npu.is_available()</span> 识别 <span class="mono">DeviceType.Ascend</span>；<span class="mono">is_ascend()</span> 是分散在各模块的设备分支开关。</p>
+        </div>
+        <div class="card tight">
+          <h4>可见卡设置</h4>
+          <p><span class="mono">start_backend_server.py:149-179</span>：Ascend 使用 <span class="mono">ASCEND_RT_VISIBLE_DEVICES</span>，非 Ascend 使用 <span class="mono">CUDA_VISIBLE_DEVICES</span>；脚本两者都设置，便于同一套 YAML 迁移。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02 HTTP -->
+    <section id="http">
+      <div class="sec-head"><span class="sec-num">02</span><h2>HTTP 接入与 OpenAI 适配</h2></div>
+      <p class="sec-desc">这一层只做协议解析、chat template 渲染、分词与生成参数转换，不触发任何 NPU 计算。</p>
+
+      <h3>2.1 路由与请求对象</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/frontend/frontend_app.py</span><span class="lines">L893-901</span></div>
+        <pre><span class="f">@app.post</span>(<span class="s">"/chat/completions"</span>)
+<span class="f">@app.post</span>(<span class="s">"/v1/chat/completions"</span>)
+<span class="k">async def</span> <span class="f">chat_completion</span>(request: ChatCompletionRequest, raw_request: RawRequest):
+    <span class="k">async def</span> <span class="f">call</span>():
+        <span class="k">return</span> <span class="k">await</span> self.frontend_server.chat_completion(request, raw_request)
+    <span class="k">return</span> <span class="k">await</span> track_business_request(call)</pre>
+      </div>
+      <p>请求体由 pydantic 模型 <span class="mono">ChatCompletionRequest</span> 承载（messages、stream、temperature、top_p、top_k、stop、seed、max_tokens、thinking 等）。<span class="mono">frontend_server.chat_completion</span>（<span class="mono">frontend_server.py:422-490</span>）生成 request_id、开启 HTTP SERVER span，再调用 <span class="mono">OpenaiEndpoint.chat_completion</span>。</p>
+
+      <h3>2.2 Renderer：Qwen3.5 的 chat template 与分词</h3>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>注册表</h4>
+          <p><span class="mono">openai/renderers/qwen35_renderer.py:44-47</span> 将 <span class="mono">qwen35_moe</span> / <span class="mono">qwen35_dense</span> / <span class="mono">qwen35_moe_mtp</span> / <span class="mono">qwen35_dense_mtp</span> 统一注册到 <span class="mono">Qwen35Renderer</span>，它继承 Qwen3 Coder 与 Qwen2-VL 的渲染逻辑。</p>
+        </div>
+        <div class="card tight">
+          <h4>渲染输出</h4>
+          <p><span class="mono">render_chat</span>（同文件 <span class="mono">L29-41</span>）输出 <span class="mono">RenderedInputs</span>：<br>
+          • <span class="mono">rendered_prompt</span>：模板拼接后的完整 prompt<br>
+          • <span class="mono">input_ids</span>：tokenizer 编码结果<br>
+          • <span class="mono">multimodal_inputs</span>：仅非 Ascend 且多模态时非空</p>
+        </div>
+      </div>
+      <p>Ascend 上多模态被显式降级为纯文本（<span class="mono">qwen3_next.py:274-281</span> 打印 warning 并跳过 ViT），因此 35B 的 <span class="mono">input_ids</span> 就是纯 token 序列，后续注意力只构建 1-D position。</p>
+
+      <h3>2.3 GenerateConfig：请求参数 → 引擎参数</h3>
+      <p><span class="mono">OpenaiEndpoint._extract_generation_config</span>（<span class="mono">openai_endpoint.py:255-345</span>）把 OpenAI 字段映射为引擎的 <span class="mono">GenerateConfig</span>：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:200px">HTTP 字段</th><th style="width:220px">GenerateConfig</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">stream=true</td><td class="mono">is_streaming=True</td><td>决定 C++ 是否逐 step 回传；非流式会在前端合并完整输出。</td></tr>
+            <tr><td class="mono">temperature / top_p / top_k</td><td class="mono">temperature / top_p / top_k</td><td>采样参数；Ascend 上 beam / penalty 等会被拒绝（见第 10 节）。</td></tr>
+            <tr><td class="mono">max_tokens / max_completion_tokens</td><td class="mono">max_new_tokens</td><td>后端还会按 <span class="mono">max_seq_len - prompt_len</span> 截断。</td></tr>
+            <tr><td class="mono">stop</td><td class="mono">stop_words_str / stop_words_list</td><td>字符串与 token 双份匹配表，支持流式增量截断。</td></tr>
+            <tr><td class="mono">chat_template_kwargs.enable_thinking</td><td class="mono">thinking_mode / max_thinking_tokens</td><td>Qwen3.5 thinking 模式；关闭时 <span class="mono">max_thinking_tokens=0</span>。</td></tr>
+            <tr><td class="mono">logprobs / prompt_logprobs</td><td class="mono">return_all_probs / return_prompt_logits</td><td>会强制走流式或单步打分约束。</td></tr>
+            <tr><td class="mono">seed</td><td class="mono">random_seed</td><td>采样随机种子。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>2.4 SSE 输出格式</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/frontend/frontend_server.py</span><span class="lines">L286-305</span></div>
+        <pre>response_data_prefix = <span class="s">"data: "</span> <span class="k">if</span> is_openai_response <span class="k">else</span> <span class="s">"data:"</span>
+<span class="k">async for</span> res <span class="k">in</span> response:
+    data_str = res.model_dump_json(exclude_none=<span class="k">True</span>)
+    <span class="k">yield</span> response_data_prefix + data_str + <span class="s">"\r\n\r\n"</span>
+    <span class="k">await</span> asyncio.sleep(<span class="n">0</span>)
+<span class="k">if not</span> is_openai_response:
+    <span class="k">yield</span> <span class="s">f"data:[done]\r\n\r\n"</span></pre>
+      </div>
+      <p>OpenAI 协议下每个 chunk 是一条完整 <span class="mono">ChatCompletionStreamResponse</span>，包含增量 <span class="mono">delta.content</span>（以及 tool_calls / reasoning_content）；非 OpenAI 的 <span class="mono">/inference</span> 用 <span class="mono">data:</span> 前缀并以 <span class="mono">data:[done]</span> 结束。取消与异常都在 <span class="mono">stream_response</span> 内收敛：取消会 <span class="mono">aclose()</span> 生成器，异常会作为 SSE 错误帧下发。</p>
+    </section>
+
+    <!-- 03 ENQUEUE -->
+    <section id="enqueue">
+      <div class="sec-head"><span class="sec-num">03</span><h2>请求编排与入队</h2></div>
+      <p class="sec-desc">两条 Python 路径最终都汇聚到 <span class="mono">BackendRPCServerVisitor.enqueue</span>：OpenAI chat 走 renderer；<span class="mono">/inference</span> 与批量接口走 Pipeline。</p>
+
+      <h3>3.1 Chat 路径：renderer.generate_choice</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/openai/renderers/custom_renderer.py</span><span class="lines">L469-494</span></div>
+        <pre><span class="k">async def</span> <span class="f">generate_choice</span>(self, request_id, input_ids, mm_inputs,
+                          generate_config, backend_rpc_server_visitor, request, headers=<span class="k">None</span>):
+    input_id_tensor = torch.Tensor(input_ids).int().unsqueeze(<span class="n">0</span>)   <span class="c"># [1, L]</span>
+    output_generator = <span class="k">await</span> backend_rpc_server_visitor.enqueue(
+        GenerateInput(
+            request_id=request_id,
+            token_ids=input_id_tensor,
+            mm_inputs=mm_inputs,
+            generate_config=generate_config,
+            tokenizer=self.tokenizer,
+            token_type_ids=[],
+            headers=normalize_request_headers(headers),
+        )
+    )
+    <span class="c"># 非流式：先合并；流式：逐 GenerateOutputs 渲染成 SSE chunk</span>
+    <span class="k">async for</span> response <span class="k">in</span> self.render_response_stream(output_generator, request, generate_config):
+        <span class="k">yield</span> response</pre>
+      </div>
+      <p><span class="mono">GenerateInput</span> 是 Python 侧请求的统一载体：token ids、多模态输入、GenerateConfig、tokenizer、headers。注意 chat 路径的 <span class="mono">token_ids</span> 已经是 <span class="mono">render_chat</span> 编码后的结果，因此不会再走 Pipeline 的 <span class="mono">tokenizer.encode(prompt)</span>。</p>
+
+      <h3>3.2 通用路径：Pipeline</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/pipeline/pipeline.py</span><span class="lines">L178-279 / L514-654</span></div>
+        <pre><span class="c"># pipeline_async：prompt → tokenizer.encode → GenerateInput</span>
+token_ids = self.tokenizer.encode(prompt)
+<span class="k">return</span> self.generate_stream(request_id, token_ids, mm_inputs, generate_config, headers=request_headers, **kwargs)
+
+<span class="c"># generate_stream：入队 + 增量解码 + 停止词截断</span>
+stream = <span class="k">await</span> self.backend_rpc_server_visitor.enqueue(input)
+<span class="k">async for</span> generate_outputs <span class="k">in</span> stream:
+    ...
+    <span class="k">yield</span> GenerateResponse(generate_outputs=generate_outputs_cache, generate_texts=generate_texts)
+    <span class="k">if</span> all(output.finished <span class="k">for</span> output <span class="k">in</span> generate_outputs_cache.generate_outputs):
+        <span class="k">break</span></pre>
+      </div>
+      <p><span class="mono">Pipeline.decode_incremental_tokens</span>（<span class="mono">L423-512</span>）负责把每次新 token 解码成文本、拼接 <span class="mono">token_buffer</span>、按 stop words 截断，并把 <span class="mono">finished</span> 状态带回。<span class="mono">FrontendWorker</span>（<span class="mono">frontend_worker.py:101</span> 构造 Pipeline）在 <span class="mono">/inference</span> 与 batch 接口使用它；chat 路径的等价逻辑在 renderer 的 <span class="mono">render_response_stream</span>。</p>
+
+      <h3>3.3 入队前的校验与路由</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/server/backend_rpc_server_visitor.py</span><span class="lines">L588-626</span></div>
+        <pre><span class="k">async def</span> <span class="f">enqueue</span>(self, input: GenerateInput):
+    ...
+    self.fill_request_info(input)          <span class="c"># trace / request_id / role addrs</span>
+    input.generate_config.validate()       <span class="c"># 生成参数合法性（含 Ascend 限制）</span>
+    self._validate_input(input)            <span class="c"># prompt 非空、max_new_tokens &gt; 0</span>
+    self.check_sp_supported(input)
+    self.check_prefill_cp_supported(input)
+
+    <span class="k">async def</span> <span class="f">route_and_enqueue</span>(attempt_input):
+        <span class="k">if</span> self.host_service.service_available:
+            <span class="k">await</span> self.route_ips(attempt_input)   <span class="c"># PD 分离时选 prefill/decode 节点</span>
+        <span class="k">return</span> self.model_rpc_client.enqueue(attempt_input)</pre>
+      </div>
+      <p><span class="mono">_validate_input</span>（<span class="mono">L571-586</span>）会把 <span class="mono">max_new_tokens</span> 夹到 <span class="mono">max_seq_len - prompt_length</span>，并在放不下时抛 <span class="mono">LONG_PROMPT_ERROR</span>。流式请求逐 chunk 透传；非流式请求先在客户端侧缓冲，再一次性返回。PD 分离不可用时按 <span class="mono">pd_route_retry_on_unavailable</span> 做有限重试，重试会换 request_id 并清空已选 role。</p>
+    </section>
+
+    <!-- 04 ENGINE -->
+    <section id="engine">
+      <div class="sec-head"><span class="sec-num">04</span><h2>RPC、调度与 C++ 引擎</h2></div>
+      <p class="sec-desc">这是“请求”变成“GPU/NPU 计算”的核心层：gRPC 进入后端，<span class="mono">NormalEngine</span> 负责取 batch，<span class="mono">NormalExecutor</span> 负责组输入、调模型、采样、回写。</p>
+
+      <h3>4.1 gRPC 入口：LocalRpcServer</h3>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>客户端（Python）</h4>
+          <p><span class="mono">cpp/model_rpc/model_rpc_client.py:881</span> 的 <span class="mono">ModelRpcClient</span> 把 <span class="mono">GenerateInput</span> 序列化为 protobuf（<span class="mono">transQuery</span> / <span class="mono">QueryConverter.cc:232</span>），调用流式 RPC。</p>
+          <p><span class="mono">enqueue</span> 定义在 <span class="mono">model_rpc_client.py:977</span>，内部按 <span class="mono">GenerateStreamCall</span> 建立 <span class="mono">grpc.aio</span> 流。</p>
+        </div>
+        <div class="card tight">
+          <h4>服务端（C++）</h4>
+          <p><span class="mono">LocalRpcServer::GenerateStreamCall</span>（<span class="mono">LocalRpcServer.cc:318-416</span>）：反序列化 → <span class="mono">engine_-&gt;enqueue(input)</span>（<span class="mono">L403-404</span>）→ 循环 <span class="mono">stream-&gt;nextOutput</span>（<span class="mono">L299</span>）→ 写回 <span class="mono">GenerateOutputsPB</span>。</p>
+          <p>取消由 <span class="mono">isCancelled(context)</span> 检测并 <span class="mono">reportError(CANCELLED)</span>。</p>
+        </div>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/cpp/model_rpc/LocalRpcServer.cc</span><span class="lines">L403-404</span></div>
+        <pre>RTP_LLM_PROFILE_SCOPE(<span class="s">"rpc.enqueue_engine"</span>);
+generate_context.setStream(engine_-&gt;enqueue(input));</pre>
+      </div>
+
+      <h3>4.2 NormalEngine 与 FIFOScheduler：调度循环</h3>
+      <p><span class="mono">NormalEngine</span> 只管“每步问调度器要一个 batch”，真正的取舍逻辑在 <span class="mono">engine_base/schedulers/FIFOScheduler</span>。这一节把两者拆开看：先看线程与调用点，再看 FIFOScheduler 的队列、状态机、准入判据和 group 车道。</p>
+
+      <h4>4.2.1 三层结构与线程模型</h4>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:200px">类</th><th style="width:150px">位置</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>SchedulerBase</b></td>
+              <td class="mono">engine_base/schedulers/SchedulerBase.h:16-45</td>
+              <td>纯接口：<span class="mono">enqueue</span> / <span class="mono">enqueueGroup</span> / <span class="mono">schedule</span> / <span class="mono">scheduleConservative</span> / <span class="mono">stop</span> / <span class="mono">empty</span> / <span class="mono">onflightStreams</span> / <span class="mono">waitingTaskList</span>。</td>
+            </tr>
+            <tr>
+              <td><b>FIFOSchedulerBase</b></td>
+              <td class="mono">FIFOSchedulerBase.h:21-100<br>FIFOSchedulerBase.cc</td>
+              <td>通用实现：四条 stream 队列、<span class="mono">enqueue</span> 入队与输入长度校验、状态推进、指标上报、停止清理。把“准入策略”留成纯虚函数钩子（<span class="mono">evaluateRunningMemory</span> / <span class="mono">waitPredicate</span>）。</td>
+            </tr>
+            <tr>
+              <td><b>FIFOScheduler</b></td>
+              <td class="mono">FIFOScheduler.h:15-135<br>FIFOScheduler.cc</td>
+              <td>真正跑在 35B 上的调度器：FIFO 准入、prefill/decode 互斥、token 预算、inited-KV 上限、显式 group 车道（<span class="mono">AdmissionLane</span>）。</td>
+            </tr>
+            <tr>
+              <td><b>PDFusionRatioScheduler</b></td>
+              <td class="mono">PDFusionRatioScheduler.cc</td>
+              <td>仅在 <span class="mono">role_type=PDFUSION</span> 且 <span class="mono">pdfusion_scheduler_mode=ratio</span> 时替换 FIFOScheduler，按 decode:prefill 轮数比交替。</td>
+            </tr>
+            <tr>
+              <td><b>BatchDecodeScheduler</b></td>
+              <td class="mono">BatchDecodeScheduler.h</td>
+              <td><span class="mono">use_batch_decode_scheduler</span> 打开时启用，按 dp_rank 组 batch。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>选择点在 <span class="mono">NormalEngine::initScheduler</span>（<span class="mono">NormalEngine.cc:287-340</span>）：先看 <span class="mono">use_batch_decode_scheduler</span>，再看 PDFUSION+ratio，否则落到 <span class="mono">FIFOScheduler</span>。35B 单卡部署走最后一个分支。</p>
+
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/cpp/normal_engine/NormalEngine.cc</span><span class="lines">L712-724 / L823-896</span></div>
+        <pre><span class="k">void</span> <span class="f">NormalEngine::loop</span>() {
+  c10::InferenceMode inference_guard(<span class="k">true</span>);
+  <span class="k">while</span> (running_) {
+    <span class="k">auto</span> status = <span class="f">step</span>();          <span class="c">// 无 sleep，忙等驱动</span>
+    <span class="k">if</span> (!status.ok()) <span class="f">trySaveStepError</span>();
+  }
+}
+
+<span class="k">absl::Status</span> <span class="f">NormalEngine::step</span>() {
+  list&lt;GenerateStreamPtr&gt; streams;
+  <span class="k">if</span> (tp_rank == <span class="n">0</span> &amp;&amp; !is_ffn_service) {
+    streams = scheduler_-&gt;<span class="f">schedule</span>();          <span class="c">// 阻塞直到有可执行 batch</span>
+    <span class="k">if</span> (dp_size &gt; <span class="n">1</span>) <span class="f">mayAddFakeStream</span>(streams);  <span class="c">// 补齐各 DP rank 的同步</span>
+  }
+  status = executor_-&gt;<span class="f">process</span>(streams, schedule_time_us);   <span class="c">// 组 batch + forward + sample</span>
+}</pre>
+      </div>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>只有 tp_rank 0 调度</h4>
+          <p><span class="mono">schedule()</span> 被 <span class="mono">tp_rank==0 &amp;&amp; !is_ffn_service</span> 包住（<span class="mono">L832</span>）。其余 rank 拿不到 streams，但仍必须进入 <span class="mono">executor_-&gt;process()</span>，否则 <span class="mono">tpSyncModelInputs</span> 的集合广播会死锁（<span class="mono">L841-846</span> 注释）。</p>
+        </div>
+        <div class="card tight">
+          <h4>DP &gt; 1 补空 batch</h4>
+          <p><span class="mono">mayAddFakeStream</span>（<span class="mono">L934</span>）在 DP 场景给没有真实请求的 rank 塞假流，保证所有 rank 步调一致。35B 单卡 <span class="mono">dp_size=1</span>，不走这条路径。</p>
+        </div>
+      </div>
+
+      <h4>4.2.2 四条队列 + 状态机</h4>
+      <p>每个请求在调度器里是一个 <span class="mono">GenerateStream</span>，状态只有四个（<span class="mono">engine_base/stream/GenerateTypes.h:178-183</span>）。<span class="mono">addStreamToNewState</span>（<span class="mono">FIFOSchedulerBase.cc:231-249</span>）负责把状态映射到具体队列：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:150px">状态</th><th style="width:190px">进入的队列</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag cfg">WAITING</span></td><td class="mono">waiting_streams_</td><td>已入队，等准入。可能因 batch 满、token 预算不足或 KV 容量不足而留在队首。</td></tr>
+            <tr><td><span class="tag py">LOADING_CACHE</span></td><td class="mono">loading_cache_streams_</td><td>KV block 已分配，等 connector 把前缀缓存 H2D 拷进来（PD 分离 / prefix cache 场景）。</td></tr>
+            <tr><td><span class="tag npu">RUNNING</span></td><td class="mono">running_streams_</td><td>当前参与执行的 batch 成员；本轮 schedule 的返回值就是这个列表的全量。</td></tr>
+            <tr><td><span class="tag quant">FINISHED</span></td><td>不进入任何队列</td><td>结束或报错，直接从列表移除；结果由 <span class="mono">GenerateStream</span> 的输出队列交回 RPC 层。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>此外还有一条临时队列 <span class="mono">new_streams_</span>：本轮新准入的 stream 先放这里，<span class="mono">schedule()</span> 末尾才 <span class="mono">splice</span> 进 <span class="mono">running_streams_</span>（<span class="mono">FIFOScheduler.cc:685-686</span>），这样“本轮新增”和“历史在跑”可以分开计数。</p>
+      <div class="note">
+        <span class="t">状态推进的触发</span>
+        推进统一走 <span class="mono">stream-&gt;moveToNext()</span>：准入时上报 <span class="mono">StreamEvents::CanRun</span>，KV 分配完成时记录 <span class="mono">LoadInitiated</span>。调度器不直接改状态，只负责“上报事件 → 让 stream 自己算下一状态 → 搬到对应队列”这个循环。
+      </div>
+
+      <h4>4.2.3 一轮 schedule() 做什么</h4>
+      <p><span class="mono">schedule()</span>（<span class="mono">FIFOScheduler.cc:575-691</span>）全程持锁，四步：</p>
+      <div class="chain">
+        <div class="step"><div class="idx">1</div><div class="body"><b>等待可执行工作</b><span>按队列状态选三档超时：10ms / 100ms / 无限。</span><span class="op">L576-586</span></div></div>
+        <div class="step"><div class="idx">2</div><div class="body"><b>推进状态</b><span>清 <span class="mono">schedule_trigger_</span>，把结束/出错的流移出 running；batch 空了就把车道重置为 <span class="mono">NONE</span>。</span><span class="op">L588-597</span></div></div>
+        <div class="step"><div class="idx">3</div><div class="body"><b>选车道并准入</b><span>group 加载完成优先；否则推进普通 cache load 与 <span class="mono">waiting_streams_</span>。</span><span class="op">L602-684</span></div></div>
+        <div class="step"><div class="idx">4</div><div class="body"><b>合并返回</b><span><span class="mono">new_streams_</span> 并入 <span class="mono">running_streams_</span>，上报指标，返回整个 running 列表。</span><span class="op">L685-690</span></div></div>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">FIFOScheduler.cc</span><span class="lines">L577-586（压缩）</span></div>
+        <pre><span class="k">if</span>   (有 cache 加载 / group 待处理)   wait_for(<span class="n">10</span>ms);   <span class="c">// 等 I/O 完成</span>
+<span class="k">elif</span> (有 waiting 但没在跑)           wait_for(<span class="n">100</span>ms);  <span class="c">// 等 PD 释放 block</span>
+<span class="k">else</span>                                wait();            <span class="c">// 空闲，等 enqueue 唤醒</span></pre>
+      </div>
+      <p>唤醒条件只有 <span class="mono">stop_</span> / <span class="mono">schedule_trigger_</span> / <span class="mono">running_streams_</span> 非空；被容量阻塞的 waiting 不算唤醒事件，避免 KV 不足时自旋。</p>
+
+      <h4>4.2.4 准入判据</h4>
+      <p>WAITING 变 RUNNING 要过 <span class="mono">evaluateRunningBatch</span>（<span class="mono">L130-160</span>）四道闸门：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:190px">闸门</th><th style="width:290px">判据</th><th>不通过</th></tr></thead>
+          <tbody>
+            <tr><td><b>① prefill / decode 互斥</b></td><td class="mono">running 非空 → false</td><td>等当前 batch 排空</td></tr>
+            <tr><td><b>② batch 数量</b></td><td class="mono">running + admitted + 1 &gt; max_generate_batch_size_</td><td>留队等下一轮；DECODE 角色可补位</td></tr>
+            <tr><td><b>③ token 预算</b></td><td class="mono">fitsPrefillTokenLimits(...)</td><td>本轮不再准入，但继续扫后面的流</td></tr>
+            <tr><td><b>④ inited-KV 流数</b></td><td class="mono">max_inited_kv_cache_streams_ &gt; 0 时统计 curBlocksNum() &gt; 0</td><td>留队；0 表示不限</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">FIFOScheduler.cc</span><span class="lines">L130-160 / L202-239（伪代码）</span></div>
+        <pre><span class="k">if</span> (role == DECODE) <span class="k">return</span> running + admitted + <span class="n">1</span> &lt;= max_gen_batch;   <span class="c">// 可补位</span>
+<span class="k">if</span> (!running.empty()) <span class="k">return false</span>;                            <span class="c">// ① 互斥</span>
+<span class="k">if</span> (running + admitted + <span class="n">1</span> &gt; max_gen_batch) <span class="k">return false</span>;      <span class="c">// ② 数量</span>
+available = max_batch_tokens - running.size();                <span class="c">// ③ 预算</span>
+<span class="k">if</span> (admitted &gt;= available || cand &gt;= available - admitted) <span class="k">return false</span>;
+<span class="k">return</span> seq_count &lt;= (available - <span class="n">1</span>) / max_seq_len;             <span class="c">// padded 矩形面积</span></pre>
+      </div>
+      <p>预算有两种口径：<span class="mono">WithCache</span> 含复用的 prefix，<span class="mono">WithoutCache</span> 只算重算 token（<span class="mono">max_batch_tokens_without_cache</span> 卡后者）。</p>
+
+      <h4>4.2.5 group 车道：enqueueGroup 的隔离执行</h4>
+      <p>批量接口可以一次提交一组必须同批执行的请求（例如同一 batch 的评测样本）。<span class="mono">enqueueGroup</span>（<span class="mono">L82-128</span>）把整组放进 <span class="mono">waiting_group_queue_</span>，并保证该组独占一个执行边界，不与普通请求混批。</p>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>准入</h4>
+          <p>整组必须一起过闸：<span class="mono">evaluateWaitingGroupQueue</span>（<span class="mono">L495</span>）逐成员调 <span class="mono">evaluateRunningBatch</span>，失败成员留在组内，已成功的进入 <span class="mono">admitted_streams</span>。<b>每轮最多尝试一个 group。</b></p>
+        </div>
+        <div class="card tight">
+          <h4>降级</h4>
+          <p>若 group 大小超过 <span class="mono">max_generate_batch_size_</span> 或 <span class="mono">max_inited_kv_cache_streams_</span>，直接回退成普通单流入队（<span class="mono">L101-123</span>），并累加 <span class="mono">group_fallback_count</span> 指标。</p>
+        </div>
+      </div>
+      <p>三个车道状态由 <span class="mono">AdmissionLane</span> 表示：<span class="mono">NONE</span>（batch 已排空，可重新选）、<span class="mono">NORMAL</span>（普通请求占着边界）、<span class="mono">GROUP</span>（group 占着边界）。<span class="mono">prefer_group_next_</span> 是公平性开关：普通车道发现 group 在排队时，本轮不再准入新普通请求，让当前 batch 尽快排空给 group 让路；反过来，如果普通请求全被 KV 阻塞，也会退让去试一个 group，避免两条车道互相 head-of-line 死锁（<span class="mono">L649-682</span> 的长注释即为此）。</p>
+
+      <h4>4.2.6 关键配置与 35B 的实际行为</h4>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:250px">参数</th><th style="width:110px">默认</th><th>在调度里的作用</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">max_generate_batch_size</td><td class="mono">32</td><td>取自 <span class="mono">concurrency_limit</span>（<span class="mono">engine_config.py:247</span>，<span class="mono">concurrent_group_args.py:22</span>）；batch 内 stream 数上限。</td></tr>
+            <tr><td class="mono">max_context_batch_size</td><td class="mono">1</td><td>prefill 预算基准（<span class="mono">fifo_scheduler_group_args.py:15</span>）；也用于 warmup 的假请求构造（<span class="mono">NormalEngine.cc:462</span>）。</td></tr>
+            <tr><td class="mono">max_batch_tokens_size</td><td class="mono">0 → 推导</td><td>为 0 时在 <span class="mono">finalize_scheduler_config</span> 置为 <span class="mono">max_context_batch_size × max_seq_len</span>（<span class="mono">engine_config.py:363-367</span>），即“允许的 padded 矩形总面积”。</td></tr>
+            <tr><td class="mono">max_batch_tokens_without_cache</td><td class="mono">0（不限）</td><td>单轮需重算 token 的软上限，防止一个长 prompt 把整轮 prefill 占满。</td></tr>
+            <tr><td class="mono">max_inited_kv_cache_streams</td><td class="mono">0（不限）</td><td>已占住 KV block 的流数上限。</td></tr>
+            <tr><td class="mono">cp_force_single_prefill</td><td class="mono">true</td><td>仅 CP prefill 开启时生效；35B 未开 CP，此约束不触发。</td></tr>
+            <tr><td class="mono">use_batch_decode_scheduler</td><td class="mono">false</td><td>为 true 时换成 <span class="mono">BatchDecodeScheduler</span>。</td></tr>
+            <tr><td class="mono">pdfusion_scheduler_mode</td><td class="mono">""</td><td>非 PDFUSION 角色或非 ratio 模式时保持 FIFOScheduler。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        <span class="t">35B 单卡下的实际调度形态</span>
+        <span class="mono">tp_size=1</span>、<span class="mono">dp_size=1</span>、未开 CP、未开 PDFUSION，因此：① 只有 rank 0 调度、没有 fake stream；② prefill 每轮把若干短 prompt 打包成一个 padded 矩形，总量受 <span class="mono">max_seq_len</span> 约束；③ decode 阶段每轮把已完成的流移出、给在跑的 batch 补位，最多 <span class="mono">concurrency_limit</span> 条；④ 单请求上限由 <span class="mono">max_seq_len</span> 和 <span class="mono">maxAvailableTokensNum()</span>（KB cache 容量，35B 为 <span class="mono">kv_cache_mem_mb=8192</span> 推导）双重限制，入队时就在 <span class="mono">checkInputLength</span> 里拦掉。
+      </div>
+      <div class="note warn">
+        <span class="t">调优时最容易踩的两个点</span>
+        ① <span class="mono">max_batch_tokens_size</span> 是“矩形面积”而不是“token 总和”，prompt 长度差异大时实际可并发的请求数会明显少于 <span class="mono">max_generate_batch_size</span>；② prefill 与 decode 严格互斥，长 prompt 的 prefill 会把同批 decode 全部推迟，首 token 与后续 token 的延迟需要分开看。
+      </div>
+
+      <h3>4.3 NormalExecutor：组输入 → Forward → 采样</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/cpp/normal_engine/NormalExecutor.cc</span><span class="lines">L291-399（节选）</span></div>
+        <pre><span class="c">// 1) 组 batch：合并 tokens / position_ids / 各 group 的 block table</span>
+batch_stream_processor_-&gt;<span class="f">gatherModelInput</span>(stream_groups, buffer_holder_);
+<span class="c">// 2) TP 输入同步（C++ broadcast；模型内集合通信用 HCCL）</span>
+<span class="f">tpSyncModelInputs</span>(model_input, parallelism_config_);
+<span class="c">// 3) KV Cache 的跨 block 拷贝（decode cache update mapping）</span>
+cache_manager_-&gt;<span class="f">blockBatchCopyByGroup</span>(decodeCacheUpdateMapping(...));
+<span class="c">// 4) 模型前向（PyWrappedModel → Python）</span>
+model_output = std::<span class="f">move</span>(model_-&gt;<span class="f">forward</span>(model_input));
+<span class="c">// 5) 采样</span>
+sampler_input = batch_stream_processor_-&gt;<span class="f">gatherSamplerInput</span>(stream_groups, model_input, model_output);
+sampler_output = std::<span class="f">move</span>(sampler_-&gt;<span class="f">forward</span>(sampler_input));</pre>
+      </div>
+      <p>组输入的具体字段在 <span class="mono">NormalModelInputGatherer.cc</span>：<span class="mono">combo_tokens</span>、<span class="mono">combo_position_ids</span>、<span class="mono">kv_cache_kernel_block_id</span>（混合架构下是 3-D <span class="mono">[group, batch, blocks]</span>）。<span class="mono">gatherModelInput</span> 定义在 <span class="mono">NormalBatchStreamProcessor.cc:59</span>，<span class="mono">gatherSamplerInput</span> 在 <span class="mono">L64</span>。</p>
+
+      <h3>4.4 PyWrappedModel：C++ 与 Python 模型的桥</h3>
+      <p><span class="mono">PyWrappedModel::forward</span>（<span class="mono">PyWrappedModel.cc:888-1075</span>）做四件事：把 host 输入搬到 NPU、构造 <span class="mono">PyAttentionInputs</span>（含 cu_seqlens 与 block table）、选择/准备 attention 实现、调用 Python <span class="mono">forward</span>。然后调用 <span class="mono">forwardPostLayers</span> 完成 final norm（可跳过）与 lm_head。</p>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/cpp/models/PyWrappedModel.cc</span><span class="lines">L1014-1024</span></div>
+        <pre>} <span class="k">else</span> {
+  py::gil_scoped_acquire gil;
+  RTP_LLM_PROFILE_SCOPE(<span class="s">"py_model.forward(normal)"</span>);
+  held_attn_pyobj_ = py_model_.<span class="f">attr</span>(<span class="s">"prepare_fmha_impl"</span>)(py_model_inputs, <span class="k">false</span>);
+  <span class="k">auto</span> outputs     = <span class="f">py_forward_method_</span>(py_model_inputs, held_attn_pyobj_);
+  py_model_outputs = outputs.<span class="f">cast</span>&lt;PyModelOutputs&gt;();
+  hidden_states    = py_model_outputs.hidden_states.<span class="f">clone</span>();
+}</pre>
+      </div>
+      <p>当 <span class="mono">can_run_graph</span> 为真时走 <span class="mono">graph_runner-&gt;forward</span>（<span class="mono">L998-1013</span>）；35B 脚本将 <span class="mono">enable_cuda_graph</span> 设为 false，因此走上面的 eager 分支。</p>
+
+      <h3>4.5 输出层：final norm + lm_head + 采样</h3>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>Python 侧已完成 final norm</h4>
+          <p><span class="mono">Qwen3NextModel.forward</span> 最后执行 <span class="mono">self.norm(hidden_states, residual)</span>（<span class="mono">qwen3_next.py:1830</span>），因此 C++ 调 <span class="mono">callForwardPostLayers(..., skip_final_layernorm=true)</span>（<span class="mono">PyWrappedModel.cc:1062-1063</span>）。</p>
+        </div>
+        <div class="card tight">
+          <h4>C++ 侧 lm_head</h4>
+          <p><span class="mono">forwardPostLayers</span>（<span class="mono">L1127-1283</span>）：prefill 时按 <span class="mono">lm_output_indexes</span> 取每条序列最后一个 token（<span class="mono">L1217-1222</span>）→ <span class="mono">torch::mm(last_hidden, lm_head.t())</span>（<span class="mono">L1235</span>）→ TP logits all-gather（<span class="mono">L1254-1257</span>）→ 窄化 vocab（<span class="mono">L1258-1265</span>）。</p>
+        </div>
+      </div>
+
+      <h4>Sampler：greedy 与随机采样</h4>
+      <p><span class="mono">Sampler::forward</span>（<span class="mono">cpp/models/Sampler.cc:87</span>）按 <span class="mono">do_sample</span> 分流：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:170px">模式</th><th style="width:260px">路径</th><th>要点</th></tr></thead>
+          <tbody>
+            <tr><td><b>单序列（beam=1）</b><br><span class="mono">temperature=0 或 &gt;0</span></td><td class="mono">execSampleGreedy</td><td>同一入口按 <span class="mono">do_sample</span> 分流：false 走逐行 argmax；true 走 temperature → top-k → top-p → 随机采样。Ascend 的张量操作落到 NPU。</td></tr>
+            <tr><td><b>beam search</b><br><span class="mono">num_beams&gt;1</span></td><td class="mono">execSampleBeamSearch</td><td>Ascend 上被引擎 gate 拒绝，实际不会进入。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>不支持项在 <span class="mono">NormalEngine.cc:752-787</span> 的 Ascend gate 中显式拒绝：<span class="mono">num_beams&gt;1</span>、<span class="mono">repetition_penalty</span>、<span class="mono">presence_penalty</span>、<span class="mono">frequency_penalty</span>、<span class="mono">no_repeat_ngram_size</span>（Python 侧 <span class="mono">GenerateConfig.validate()</span> 有镜像检查）。</p>
+
+      <h3>4.6 输出回传：dispatcher → stream → gRPC</h3>
+      <div class="chain">
+        <div class="step"><div class="idx">1</div><div class="body"><b>NormalOutputDispatcher::dispatch</b><span>把 sampler 的 token / logits / hidden 按 stream 切分，处理 beam/parent index、logprobs、hidden states。</span><span class="op">NormalOutputDispatcher.cc:155 / 274</span></div></div>
+        <div class="step"><div class="idx">2</div><div class="body"><b>NormalGenerateStream::prepareGenerateOutput</b><span>组装 <span class="mono">GenerateOutput</span>（new_tokens、finished、aux_info、logits…），<span class="mono">finished</span> 由 EOS / max_new_tokens / 取消决定。</span><span class="op">NormalGenerateStream.cc:73-148</span></div></div>
+        <div class="step"><div class="idx">3</div><div class="body"><b>LocalRpcServer 拉取输出</b><span><span class="mono">stream-&gt;nextOutput(kRpcOutputWaitTimeoutMs)</span> 阻塞等待，逐帧写回 gRPC <span class="mono">ServerWriter</span>。</span><span class="op">LocalRpcServer.cc:294-316 / 318</span></div></div>
+        <div class="step"><div class="idx">4</div><div class="body"><b>Python 收到 GenerateOutputs</b><span>renderer / Pipeline 增量 decode，转成 SSE chunk；全部 <span class="mono">finished</span> 后结束生成器。</span><span class="op">custom_renderer.py:519 / pipeline.py:638-654</span></div></div>
+      </div>
+    </section>
+
+    <!-- 05 MODEL -->
+    <section id="model">
+      <div class="sec-head"><span class="sec-num">05</span><h2>模型前向：Qwen3.5-35B-A3B</h2></div>
+      <p class="sec-desc">Qwen3.5 是“线性注意力 + 全注意力”的混合 MoE 架构。Ascend 上 <span class="mono">Qwen35Moe</span> 注册为 <span class="mono">qwen35_moe</span>，HF 架构名 <span class="mono">Qwen3_5MoeForConditionalGeneration</span>，最终实例化 <span class="mono">models_py/model_desc/qwen3_next.py</span> 的 <span class="mono">Qwen35Model</span>。</p>
+
+      <h3>5.1 模型骨架与关键参数</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:220px">参数</th><th style="width:120px">值</th><th>对链路的影响</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">num_hidden_layers</td><td class="mono">40</td><td>逐层执行 decoder layer；层类型由 <span class="mono">layer_types</span> 决定。</td></tr>
+            <tr><td class="mono">hidden_size</td><td class="mono">2048</td><td>激活宽度；MoE / Linear 的 K 维。</td></tr>
+            <tr><td class="mono">full_attention_interval</td><td class="mono">4</td><td><span class="mono">(i+1)%4==0</span> 的层为 full attention：共 10 层（3/7/11/…/39）；其余 30 层为 GDN。</td></tr>
+            <tr><td class="mono">num_attention_heads / kv_heads</td><td class="mono">16 / 2</td><td>full attention 的 GQA 比例 8:1。</td></tr>
+            <tr><td class="mono">head_dim</td><td class="mono">256</td><td>q/k/v 头维；partial_rotary_factor=0.25 → RoPE 只作用前 64 维。</td></tr>
+            <tr><td class="mono">linear_num_key_heads / value_heads</td><td class="mono">16 / 32</td><td>GDN 的 k/v 头数；value 头是 key 头 2 倍（<span class="mono">num_key_value_heads=2</span>）。</td></tr>
+            <tr><td class="mono">linear_key_head_dim / value_head_dim</td><td class="mono">128 / 128</td><td>GDN 每头维度；chunk 内状态为 <span class="mono">[DK, DV]</span>。</td></tr>
+            <tr><td class="mono">linear_conv_kernel_dim</td><td class="mono">4</td><td>causal conv1d 的卷积核宽度，conv state 长度 = 3。</td></tr>
+            <tr><td class="mono">num_experts / top-k</td><td class="mono">256 / 8</td><td>每 token 选 8 个路由专家；另有 1 个 shared expert。</td></tr>
+            <tr><td class="mono">moe_intermediate_size</td><td class="mono">512</td><td>单专家 FFN 中间维；grouped GEMM 的 N 维。</td></tr>
+            <tr><td class="mono">shared_expert_intermediate_size</td><td class="mono">512</td><td>共享专家（DenseMLP）中间维。</td></tr>
+            <tr><td class="mono">vocab_size</td><td class="mono">248320</td><td>lm_head 输出宽度；TP 时按 vocab 切分并 all-gather logits。</td></tr>
+            <tr><td class="mono">max_position_embeddings</td><td class="mono">262144</td><td>RoPE cache 与 max_seq_len 上限。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="strip-card" style="margin-top:16px">
+        <h4 style="margin-top:0">40 层结构（数字为层号）</h4>
+        <div class="strip" id="layerStrip"></div>
+        <div class="legend">
+          <span><i class="g"></i>LINEAR / GDN（30 层）</span>
+          <span><i class="a"></i>FULL ATTENTION（10 层）</span>
+          <span>每层后接 MoE（256 experts + shared expert）</span>
+        </div>
+      </div>
+
+      <h3>5.2 单层执行顺序</h3>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/model_desc/qwen3_next.py</span><span class="lines">L1501-1524</span></div>
+        <pre><span class="k">def</span> <span class="f">forward</span>(self, hidden_states, residual, fmha_impl, kv_cache, attention_inputs, attn_meta):
+    hidden_states, residual = self.input_layernorm(hidden_states, residual)      <span class="c"># RMSResNorm</span>
+    hidden_states = self.self_attn(                                             <span class="c"># GDN 或 Full Attn</span>
+        hidden_states=hidden_states, fmha_impl=fmha_impl, kv_cache=kv_cache,
+        attention_inputs=attention_inputs, attn_meta=attn_meta)
+    hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+    hidden_states = self.mlp(hidden_states)                                     <span class="c"># GenericMoeLayer</span>
+    <span class="k">return</span> hidden_states, residual</pre>
+      </div>
+      <p>层类型在构造时确定：<span class="mono">Qwen3NextDecoderLayer.__init__</span>（<span class="mono">L1450-1492</span>）按 <span class="mono">hybrid_attention_types[layer_idx]</span> 选择 <span class="mono">Qwen3NextGatedDeltaNet</span> 或 <span class="mono">Qwen3NextAttention</span>；<span class="mono">moe_style==1/2</span> 时 MLP 为 <span class="mono">GenericMoeLayer</span>，<span class="mono">moe_style==0</span> 为 <span class="mono">DenseMLP</span>。35B 全部 40 层都是 MoE。</p>
+
+      <h3>5.3 GDN 线性注意力（30 层）</h3>
+      <p>GDN 层把 hidden 投影成 q/k/v/z 与 b/a，然后做 causal conv、门控、chunk/recurrent 形式的 delta rule，最后按头做 gated RMSNorm 并输出投影。</p>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>投影与结构</h4>
+          <p><span class="mono">in_proj_qkvz</span> 与 <span class="mono">in_proj_ba</span>（FLOAT/bf16）；当 qkvz 为 bf16 时，<span class="mono">L1070-1114</span> 会把两个 GEMM 融合成一个 <span class="mono">in_proj_fused</span>。随后 <span class="mono">fix_query_key_value_ordering</span> 拆成 <span class="mono">mixed_qkv / z / b / a</span>。</p>
+          <p>GDN 权重在本量化产物中全部为 <span class="mono">FLOAT</span>，因此走 <span class="mono">AscendF16Linear</span>（<span class="mono">F.linear</span>），不是 MXFP8。</p>
+        </div>
+        <div class="card tight">
+          <h4>Prefill / Decode 分流</h4>
+          <p><span class="mono">Qwen3NextGatedDeltaNet.forward</span>（<span class="mono">L1391-1433</span>）：<span class="mono">is_prefill &amp;&amp; !is_target_verify</span> → <span class="mono">prefill_gdn</span>；否则 → <span class="mono">decode_gdn</span>。输出再过 <span class="mono">RmsNormGated</span>（per-head RMSNorm + SiLU(z) 门控）、<span class="mono">out_proj</span>，TP&gt;1 时 all-reduce。</p>
+        </div>
+      </div>
+
+      <h4>Prefill：chunk 化 delta rule</h4>
+      <div class="chain">
+        <div class="step"><div class="idx">1</div><div class="body"><b>causal_conv1d_fn</b><span>沿序列做因果卷积并就地更新分页 conv state；Ascend 走 FLA-NPU 的 <span class="mono">npu_causal_conv1d_fn</span>。</span><span class="op">causal_conv1d.py:295</span></div></div>
+        <div class="step"><div class="idx">2</div><div class="body"><b>fused_gdn_gating</b><span><span class="mono">g = -exp(A_log) * softplus(a + dt_bias)</span>，<span class="mono">beta = sigmoid(b)</span>；Ascend 用 PyTorch 等价实现。</span><span class="op">kernels/ascend/common.py:14-32</span></div></div>
+        <div class="step"><div class="idx">3</div><div class="body"><b>load_initial_state_from_block_map</b><span>从分页 SSM state 池按 block_map/prefix_lengths 读取初始状态。</span><span class="op">kernels/ascend/block.py</span></div></div>
+        <div class="step"><div class="idx">4</div><div class="body"><b>chunk_gated_delta_rule</b><span>内部依次：l2norm → local cumsum → scaled dot KKT → solve_tril → recompute w/u → fwd_h → fwd_o；chunk=64。</span><span class="op">linear_attention.py:356-410</span></div></div>
+        <div class="step"><div class="idx">5</div><div class="body"><b>store_ssm_state_to_block_map</b><span>把最终 state 写回分页池，供后续 decode 使用。</span><span class="op">qwen3_next.py:695-704</span></div></div>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/model_desc/qwen3_next.py</span><span class="lines">L684-704（节选）</span></div>
+        <pre>attn_out, h, final_state = <span class="f">chunk_gated_delta_rule</span>(
+    query, key, value, g, beta,
+    initial_state=initial_states,
+    output_final_state=<span class="k">True</span>,
+    cu_seqlens=cu_seqlens_without_padding,
+    use_qk_l2norm_in_kernel=<span class="k">True</span>,
+)
+<span class="k">if</span> ssm_states <span class="k">is not</span> <span class="k">None</span> <span class="k">and not</span> use_flydsl_chunk_gdn:
+    <span class="f">store_ssm_state_to_block_map</span>(
+        h, final_state, attn_inputs.prefix_lengths_device,
+        cu_seqlens_without_padding,
+        ...)</pre>
+      </div>
+
+      <h4>Decode：单步 recurrent</h4>
+      <div class="chain">
+        <div class="step"><div class="idx">1</div><div class="body"><b>causal_conv1d_update</b><span>单 token 卷积 + conv state 原地更新；Ascend 走 <span class="mono">npu_causal_conv1d_update</span>。</span><span class="op">causal_conv1d.py:386</span></div></div>
+        <div class="step"><div class="idx">2</div><div class="body"><b>fused_gdn_gating</b><span>同 prefill，得到 g / beta。</span><span class="op">common.py:14</span></div></div>
+        <div class="step"><div class="idx">3</div><div class="body"><b>fused_recurrent_gated_delta_rule</b><span>按 <span class="mono">block_map + sequence_lengths</span> 读写 SSM state，单步更新；Ascend 走 FLA-NPU recurrent kernel（CUDA 有 aiter 快路径）。</span><span class="op">recurrent.py:179-215</span></div></div>
+        <div class="step"><div class="idx">4</div><div class="body"><b>写回 state</b><span>inplace 更新分页 state；随后 gated RMSNorm + out_proj + all-reduce。</span><span class="op">qwen3_next.py:928-945</span></div></div>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/model_desc/qwen3_next.py</span><span class="lines">L924-941</span></div>
+        <pre>g, beta = <span class="f">fused_gdn_gating</span>(self.alog, a, b, self.dt_bias)
+g = g.view(batch, seq, self.local_num_v_heads)
+beta = beta.view(batch, seq, self.local_num_v_heads)
+core_attn_out, _ = <span class="f">fused_recurrent_gated_delta_rule</span>(
+    q=query, k=key, v=value, g=g, beta=beta, scale=<span class="k">None</span>,
+    initial_state=ssm_states, inplace_final_state=<span class="k">True</span>,
+    block_map=self._get_fla_block_map(attn_inputs),
+    seq_size_per_block=seq_size_per_block,
+    sequence_lengths=attn_inputs.sequence_lengths_plus_1_device,
+    use_qk_l2norm_in_kernel=<span class="k">True</span>)</pre>
+      </div>
+
+      <h3>5.4 Full Attention（10 层）</h3>
+      <p><span class="mono">Qwen3NextAttention</span> 继承 <span class="mono">CausalAttention</span>，并额外带一个输出门控投影 <span class="mono">gate = self.gate(hidden_states)</span>（<span class="mono">L1024-1043</span>）。q/k/v 为 packed <span class="mono">qkv_proj</span>，本量化产物中 q/k/v 为 MXFP8，<span class="mono">o_proj</span> 为 FLOAT。</p>
+      <div class="chain">
+        <div class="step"><div class="idx">1</div><div class="body"><b>qkv_proj + q/k norm</b><span>q/k 每头做 RMSNorm（<span class="mono">FusedQKRMSNorm</span>，Ascend 为 torch 实现）；v 不 norm。</span><span class="op">causal_attention.py:23-110 / ascend/norm.py:72-103</span></div></div>
+        <div class="step"><div class="idx">2</div><div class="body"><b>RoPE</b><span>Ascend 把 Mrope 降级为 Base（1-D position），cos/sin cache 只作用 <span class="mono">dim=64</span>；helper 为 <span class="mono">apply_rope_pos_ids_nhd</span>。</span><span class="op">ascend_rope_emb.py:43-70</span></div></div>
+        <div class="step"><div class="idx">3</div><div class="body"><b>写 KV Cache</b><span><span class="mono">npu_scatter_pa_kv_cache(key, value, k_view, v_view, slot_mapping, cache_mode="Norm")</span>，直接 scatter 进 BSND 分页池。</span><span class="op">ascend_kv_cache_write_op.py:26-41</span></div></div>
+        <div class="step"><div class="idx">4</div><div class="body"><b>Paged Attention</b><span><span class="mono">npu_fused_infer_attention_score_v2</span>：TND layout、block_table、sparse_mode=3（causal）、page_size=512。</span><span class="op">ascend_prefill.py:145-175 / ascend_decode.py:152-185</span></div></div>
+        <div class="step"><div class="idx">5</div><div class="body"><b>输出门控 + o_proj</b><span><span class="mono">attn_output * sigmoid(gate)</span> → <span class="mono">o_proj</span> → TP all-reduce。</span><span class="op">qwen3_next.py:1041-1043 / causal_attention.py:96-110</span></div></div>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/modules/factory/attention/ascend_impl/ascend_prefill.py</span><span class="lines">L162-174（decode 同构）</span></div>
+        <pre>attn_output, _ = torch_npu.<span class="f">npu_fused_infer_attention_score_v2</span>(
+    query=q, key=k_cache, value=v_cache,
+    atten_mask=atten_mask,
+    block_table=block_table,
+    input_layout=<span class="s">"TND"</span>,
+    block_size=self.page_size,
+    actual_seq_qlen=actual_seq_q,
+    actual_seq_kvlen=actual_seq_kv,
+    num_key_value_heads=self.num_kv_heads,
+    num_query_heads=self.num_heads,
+    softmax_scale=self.scale,
+    sparse_mode=<span class="n">3</span>,
+)</pre>
+      </div>
+      <div class="note">
+        <span class="t">KV Cache 视图</span>
+        Python 侧把 C++ 传来的 <span class="mono">kv_cache_base</span> 视为 <span class="mono">[blocks, 2, page, heads, dim]</span>（BSND），分别取 <span class="mono">[:,0]</span>/<span class="mono">[:,1]</span> 作为 K/V，再 reshape 成 <span class="mono">[blocks, page_size, heads*dim]</span> 给 FIA v2 使用（<span class="mono">ascend_prefill.py:146-151</span>）。
+      </div>
+
+      <h3>5.5 MoE：256 experts + shared expert（W8A8_MXFP8）</h3>
+      <p>MoE 是 35B 量化收益的主体：路由专家全部以 MXFP8 权重加载，激活在运行时动态量化；shared expert 保持 FLOAT。</p>
+      <h4>路由：gate → top-8 → 重归一化</h4>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/model_desc/generic_moe.py</span><span class="lines">L173-226（节选）</span></div>
+        <pre>router_logits = self.gate(hidden_states)                   <span class="c"># [T, 2048] -&gt; [T, 256]</span>
+topk_weights = torch.empty((num_tokens, self.top_k), dtype=torch.float32, ...)
+topk_ids     = torch.empty((num_tokens, self.top_k), dtype=topk_ids_dtype, ...)  <span class="c"># int32</span>
+...
+self.select_topk(router_logits, topk_ids, topk_weights)    <span class="c"># CANN softmax + top-k</span>
+...
+experts_output = self.fused_moe(
+    hidden_states=hidden_states, topk_weights=topk_weights,
+    topk_ids=topk_ids, activation=<span class="s">"SiGLU"</span>,
+    skip_tp_allreduce=self.use_unified_tp_allreduce)
+<span class="k">if</span> self.shared_expert <span class="k">is not</span> <span class="k">None</span>:
+    shared = self.shared_expert(hidden_states, skip_allreduce=...)
+    ...</pre>
+      </div>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/modules/base/ascend/select_topk.py</span><span class="lines">L37-53</span></div>
+        <pre>topk_weights_fp32, topk_ids_int32, _ = torch_npu.<span class="f">npu_moe_gating_top_k</span>(
+    router_logits_fp32, k=self.top_k, k_group=<span class="n">1</span>, group_count=<span class="n">1</span>,
+    group_select_mode=<span class="n">0</span>, renorm=<span class="n">0</span>, norm_type=<span class="n">0</span>, out_flag=<span class="k">False</span>)
+<span class="k">if</span> self.config.has_moe_norm:          <span class="c"># Qwen norm_topk_prob=True</span>
+    denominator = topk_weights_fp32.sum(dim=-<span class="n">1</span>, keepdim=<span class="k">True</span>)
+    topk_weights_fp32 = topk_weights_fp32 / denominator.clamp_min(...)
+topk_weights.copy_(topk_weights_fp32.to(topk_weights.dtype))
+topk_ids.copy_(topk_ids_int32.to(topk_ids.dtype))</pre>
+      </div>
+
+      <h4>执行：CANN 全融合 dispatch / grouped GEMM / combine</h4>
+      <div class="chain">
+        <div class="step"><div class="idx">1</div><div class="body"><b>npu_moe_init_routing_v2</b><span>一次调用完成 flatten 分发：输出按专家分组的行、<span class="mono">row_idx</span>、<span class="mono">group_list</span>；替代 torch 侧 argsort/bincount/cumsum 与布尔压缩。</span><span class="op">w8a8_mxfp8_executor.py:119-134</span></div></div>
+        <div class="step"><div class="idx">2</div><div class="body"><b>npu_dynamic_mx_quant</b><span>激活按 1×32 组动态量化成 FP8 E4M3，并产生 E8M0 per-token scale。</span><span class="op">L138-140</span></div></div>
+        <div class="step"><div class="idx">3</div><div class="body"><b>npu_grouped_matmul（GEMM1）</b><span>w1 为 <span class="mono">[E, K, 2N]</span>，按 up|gate 拼接；传入 MXFP8 权重、E8M0 scale、per-token scale，输出 bf16。</span><span class="op">L173-187</span></div></div>
+        <div class="step"><div class="idx">4</div><div class="body"><b>silu(gate) * up</b><span><span class="mono">upgate.chunk(2, -1)</span> → <span class="mono">F.silu(gate) * up</span>；随后再次动态 MX 量化。</span><span class="op">L189-193</span></div></div>
+        <div class="step"><div class="idx">5</div><div class="body"><b>npu_grouped_matmul（GEMM2）</b><span>w2 为 <span class="mono">[E, K_inter, N_hidden]</span>，输出回到 hidden 维。</span><span class="op">L194-208</span></div></div>
+        <div class="step"><div class="idx">6</div><div class="body"><b>npu_moe_token_unpermute</b><span>用 scatter index 还原 token 顺序，同时乘 top-k 权重并求和；替代逐 token index_add。</span><span class="op">L143-167</span></div></div>
+        <div class="step"><div class="idx">7</div><div class="body"><b>shared expert + all-reduce</b><span>shared expert 为 FLOAT DenseMLP；有 <span class="mono">shared_expert_gate</span> 时做 sigmoid 门控后相加。TP&gt;1 时由 router finalize 对 routed 输出 all-reduce。</span><span class="op">generic_moe.py:227-258 / strategy L96-111</span></div></div>
+      </div>
+      <div class="note">
+        <span class="t">为什么走这个策略</span>
+        <span class="mono">StrategyRegistry.get_strategy</span>（<span class="mono">strategy_registry.py:80-140</span>）按 <span class="mono">moe_quant_method</span> 先筛，再按 <span class="mono">can_handle</span> 选择最高优先级策略。MXFP8 + <span class="mono">single GPU / tp==ep</span> 命中 <span class="mono">AscendW8A8MXFP8MoeStrategy</span>（<span class="mono">w8a8_mxfp8_strategy.py:113-155</span>）；BF16 无条件则命中 <span class="mono">AscendCannStrategy</span>（<span class="mono">cann.py:20-47</span>），使用 <span class="mono">NpuPureTpRouter + NpuFusedExpertsExecutor</span>。
+      </div>
+
+      <h3>5.6 线性层与 Norm 的设备映射</h3>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>Linear</h4>
+          <p><span class="mono">LinearFactory</span> 按权重与 quant_config 选实现：<br>
+          • 无 scale → <span class="mono">AscendF16Linear</span>，<span class="mono">F.linear</span>（<span class="mono">f16_linear.py:41-42</span>）<br>
+          • MXFP8 → <span class="mono">AscendW8A8MXFP8Linear</span>，<span class="mono">npu_dynamic_mx_quant</span> + <span class="mono">npu_quant_matmul(group_sizes=[1,1,32])</span>（<span class="mono">w8a8_mxfp8_linear.py:72-105</span>）</p>
+        </div>
+        <div class="card tight">
+          <h4>RMSNorm / RMSResNorm</h4>
+          <p>Ascend 的 <span class="mono">RMSNorm</span> / <span class="mono">RMSResNorm</span> 目前直接用 PyTorch 组合实现（<span class="mono">x * rsqrt(mean(x²)+eps) * gamma</span>），见 <span class="mono">modules/base/ascend/norm.py:13-28</span>；<span class="mono">QKRMSNorm</span> 按头 reshape 后调用同一 RMSNorm。</p>
+        </div>
+      </div>
+      <div class="note warn">
+        <span class="t">注意</span>
+        不要把 <span class="mono">RMSResNorm</span> 误认为 fused <span class="mono">npu_add_rms_norm</span>：当前分支 Ascend 走的是 torch 组合。若后续做性能优化，这是明显的融合候选点（add + rmsnorm 两次 kernel）。
+      </div>
+    </section>
+
+    <!-- 06 OPS -->
+    <section id="ops">
+      <div class="sec-head"><span class="sec-num">06</span><h2>昇腾算子映射</h2></div>
+      <p class="sec-desc">下表把链路中的“通用计算语义”映射到当前分支实际调用的昇腾接口。除 <span class="mono">torch_npu</span> 内置 aclnn 算子外，GDN 依赖外部 <span class="mono">flash-linear-attention-npu</span>（<span class="mono">fla_npu.ops.ascendc</span>）。</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:190px">计算语义</th><th style="width:300px">昇腾实现</th><th>代码位置</th></tr></thead>
+          <tbody>
+            <tr><td>Embedding gather</td><td class="mono">Embedding module / torch index</td><td class="mono">modules/base/ascend/embedding.py</td></tr>
+            <tr><td>RMSNorm / RMSResNorm</td><td class="mono">torch pow / mean / rsqrt / mul</td><td class="mono">modules/base/ascend/norm.py:13-28</td></tr>
+            <tr><td>BF16 Linear</td><td class="mono">F.linear</td><td class="mono">linear/impl/ascend/f16_linear.py:41-42</td></tr>
+            <tr><td>MXFP8 Linear</td><td class="mono">npu_dynamic_mx_quant + npu_quant_matmul</td><td class="mono">linear/impl/ascend/w8a8_mxfp8_linear.py:72-105</td></tr>
+            <tr><td>Full attention</td><td class="mono">npu_fused_infer_attention_score_v2</td><td class="mono">attention/ascend_impl/ascend_prefill.py:162 / ascend_decode.py:173</td></tr>
+            <tr><td>KV Cache 写入</td><td class="mono">npu_scatter_pa_kv_cache</td><td class="mono">ascend_kv_cache_write_op.py:39-41</td></tr>
+            <tr><td>RoPE</td><td class="mono">apply_rope_pos_ids_nhd（torch 组合）</td><td class="mono">ascend_rope_emb.py:43-70</td></tr>
+            <tr><td>因果卷积（prefill）</td><td class="mono">fla_npu: npu_causal_conv1d_fn</td><td class="mono">kernels/ascend/causal_conv1d.py:295</td></tr>
+            <tr><td>因果卷积（decode）</td><td class="mono">fla_npu: npu_causal_conv1d_update</td><td class="mono">causal_conv1d.py:386</td></tr>
+            <tr><td>GDN chunk 全链</td><td class="mono">fla_npu: npu_chunk_gated_delta_rule_*</td><td class="mono">kernels/ascend/linear_attention.py:258-410</td></tr>
+            <tr><td>GDN 单步 recurrent</td><td class="mono">fla_npu: fused_recurrent_gated_delta_rule</td><td class="mono">kernels/ascend/recurrent.py:179</td></tr>
+            <tr><td>MoE gating / top-k</td><td class="mono">npu_moe_gating_top_k</td><td class="mono">modules/base/ascend/select_topk.py:37</td></tr>
+            <tr><td>MoE 分发</td><td class="mono">npu_moe_init_routing_v2</td><td class="mono">executors/w8a8_mxfp8_executor.py:119</td></tr>
+            <tr><td>MoE grouped GEMM</td><td class="mono">npu_grouped_matmul（E8M0 scale）</td><td class="mono">同文件 L173-208</td></tr>
+            <tr><td>MoE 激活</td><td class="mono">F.silu × mul；BF16 CANN 路径用 npu_swiglu</td><td class="mono">L189-193 / executors/npu_fused_experts.py:164</td></tr>
+            <tr><td>MoE combine</td><td class="mono">npu_moe_token_unpermute</td><td class="mono">L162-166</td></tr>
+            <tr><td>Top-k / Top-p 采样</td><td class="mono">aclnnApplyTopKTopP</td><td class="mono">bindings/ascend/ops/ascend_apply_top_k_top_p.h:42-48</td></tr>
+            <tr><td>TP / DP 集合通信</td><td class="mono">HCCL（torch.distributed）</td><td class="mono">models_py/distributed/collective_torch.py:765</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 07 TIMELINE -->
+    <section id="timeline">
+      <div class="sec-head"><span class="sec-num">07</span><h2>Prefill / Decode 时序</h2></div>
+      <p class="sec-desc">一次请求在引擎里通常经历 1 个 prefill step 和 N 个 decode step；每一步都完整走一遍“组 batch → forward → sample → dispatch”。</p>
+
+      <div class="seq">
+        <div class="seq-row head"><div>阶段</div><div>执行方</div><div>动作</div></div>
+        <div class="seq-row pref"><div class="who">HTTP 接入</div><div>frontend</div><div>解析 OpenAI 请求 → render_chat → tokenizer.encode → GenerateConfig。</div></div>
+        <div class="seq-row pref"><div class="who">入队</div><div>frontend</div><div>GenerateInput → BackendRPCServerVisitor.enqueue → gRPC。</div></div>
+        <div class="seq-row pref"><div class="who">进入引擎</div><div>C++ RPC</div><div>LocalRpcServer.GenerateStreamCall → NormalEngine.enqueue → makeStream → scheduler enqueue。</div></div>
+        <div class="seq-row pref"><div class="who">Prefill 调度</div><div>NormalEngine</div><div>FIFO 取 context batch；按 max_context_batch_size 与 KV 内存约束成组。</div></div>
+        <div class="seq-row pref"><div class="who">Prefill 组输入</div><div>NormalExecutor</div><div>combo_tokens / positions / cu_seqlens / block_table；TP 同步；KV 更新映射。</div></div>
+        <div class="seq-row pref"><div class="who">Prefill Forward</div><div>PyWrappedModel → Python</div><div>40 层：10 层 FIA prefill + 30 层 GDN chunk；最后 final norm + lm_head（仅取每条序列末 token）。</div></div>
+        <div class="seq-row pref"><div class="who">首 token</div><div>Sampler</div><div>采样 logits → new token；写回 stream，标记是否 finished。</div></div>
+        <div class="seq-row deco"><div class="who">Decode 循环 ×N</div><div>NormalEngine</div><div>decode batch 聚合；每次一步 forward，KV Cache 原地增长。</div></div>
+        <div class="seq-row deco"><div class="who">Decode Forward</div><div>Python 模型</div><div>10 层 FIA decode（block_table + context_len） + 30 层 GDN recurrent（block_map + state）。</div></div>
+        <div class="seq-row deco"><div class="who">逐 step 回传</div><div>C++ → 前端</div><div>SamplerOutput → dispatcher → GenerateOutput → gRPC → 增量 decode → SSE chunk。</div></div>
+        <div class="seq-row deco"><div class="who">结束</div><div>引擎 / 前端</div><div>EOS、stop word、max_new_tokens 或客户端取消；finished=true，流关闭。</div></div>
+      </div>
+      <div class="legend" style="margin-top:10px">
+        <span><i style="background:#f7fdfb;border:1px solid #d1fae5"></i>Prefill / 请求准备行</span>
+        <span><i style="background:#fffcfa;border:1px solid #fed7aa"></i>Decode 阶段行</span>
+      </div>
+
+      <div class="note" style="margin-top:16px">
+        <span class="t">Prefill 与 Decode 的关键差异</span>
+        Prefill 的 token 维是 <span class="mono">prompt_len</span>（大 M），attention 用 <span class="mono">input_lengths/prefix_lengths</span> 生成 <span class="mono">cu_seqlens</span>；Decode 的 token 维是 batch（每请求 1 token），attention 用 <span class="mono">sequence_lengths+1</span> 作为 <span class="mono">actual_seq_kvlen</span>。GDN 侧对应地从 chunk 化算法切到 recurrent 单步算法。
+      </div>
+    </section>
+
+    <!-- 08 KV -->
+    <section id="kv">
+      <div class="sec-head"><span class="sec-num">08</span><h2>KV Cache 与混合状态</h2></div>
+      <p class="sec-desc">35B 的“缓存”不止 KV：full attention 用分页 K/V，GDN 用卷积状态与 SSM 状态。三者共享同一个 block 管理器，但按 group 维护不同物理布局。</p>
+
+      <div class="grid2">
+        <div class="card tight">
+          <h4>三类状态</h4>
+          <dl class="kv">
+            <dt>Full attention K/V</dt><dd>分页 <span class="mono">[blocks, 2, page, kv_heads×head_dim]</span>（BSND 视图），FIA v2 读取，scatter 写入。</dd>
+            <dt>GDN conv state</dt><dd>每层卷积历史（宽度 3），随 <span class="mono">causal_conv1d</span> 更新。</dd>
+            <dt>GDN SSM state</dt><dd>每层 <span class="mono">[value_heads, DV, DK]</span> 的 V-first 分页状态；kernel 内部转为 K-first <span class="mono">[HV, DK, DV]</span> 视图（<span class="mono">linear_attention.py:276-280</span>）。</dd>
+          </dl>
+        </div>
+        <div class="card tight">
+          <h4>Group 与 block table</h4>
+          <p><span class="mono">kv_cache_spec_descs</span> 由 <span class="mono">build_hybrid_kv_cache_spec_descs(..., KVCacheSpecType.MHA)</span> 生成（<span class="mono">models/qwen3_next/qwen3_next.py:181-185</span>）。C++ 组 batch 时把 block table 传成 3-D <span class="mono">[group, batch, blocks]</span>（<span class="mono">PyWrappedModel.cc:440-493</span>），Python 再按 tag 取对应 group（<span class="mono">model_desc/block_map.py</span>）。</p>
+        </div>
+      </div>
+
+      <h3>8.1 slot_mapping 与 KV 写入</h3>
+      <p><span class="mono">compute_ascend_attn_params</span>（<span class="mono">ascend_attn_params.py:59-90</span>）在 CPU 上纯 Python 计算每个 token 的 <span class="mono">positions</span> 与 <span class="mono">slot_mapping</span>，然后搬到 NPU。它替代了 C++ 的 <span class="mono">FlashInferMlaAttnParams.fill_params()</span>，且必须使用 kernel 粒度 block table，才能与 <span class="mono">kv_cache_base</span> 的视图和 FIA 的 block table 对齐。</p>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/models_py/modules/factory/attention/ascend_impl/ascend_kv_cache_write_op.py</span><span class="lines">L26-41</span></div>
+        <pre>kv_base = kv_cache.kv_cache_base          <span class="c"># BSND [blocks, seq, heads, dim]</span>
+k_view  = kv_base[:, <span class="n">0</span>]
+v_view  = kv_base[:, <span class="n">1</span>]
+slot_mapping = self.params.slot_mapping
+torch_npu.<span class="f">npu_scatter_pa_kv_cache</span>(key, value, k_view, v_view, slot_mapping, cache_mode=<span class="s">"Norm"</span>)</pre>
+      </div>
+
+      <h3>8.2 GDN 状态的读写</h3>
+      <p>Prefill 从分页池读初始 state（<span class="mono">load_initial_state_from_block_map</span>），chunk 结束后把 <span class="mono">final_state</span> 写回（<span class="mono">store_ssm_state_to_block_map</span>，<span class="mono">qwen3_next.py:695-704</span>）；Decode 用 <span class="mono">block_map + sequence_lengths_plus_1</span> 定位并 inplace 更新（<span class="mono">recurrent.py:179-215</span>）。注意 Ascend 的 conv state 视图是 <span class="mono">(pages, state_len, dim)</span>，与 Triton 路径的 <span class="mono">(page, dim, state)</span> 不同，代码里用 <span class="mono">_IS_ASCEND</span> 分支区分（<span class="mono">qwen3_next.py:788-807</span>）。</p>
+
+      <div class="note warn">
+        <span class="t">容量与块大小</span>
+        35B 部署设置 <span class="mono">kv_cache_mem_mb=8192</span>、<span class="mono">seq_size_per_block=512</span>、<span class="mono">kernel_seq_size_per_block=512</span>。FIA v2 推荐 page_size=128，但本分支因混合缓存断言只能 512/512；修改前先确认 <span class="mono">OpDefs.h</span> 的约束。
+      </div>
+    </section>
+
+    <!-- 09 QUANT -->
+    <section id="quant">
+      <div class="sec-head"><span class="sec-num">09</span><h2>量化与权重加载</h2></div>
+      <p class="sec-desc">本部署使用 ModelSlim 预量化产物：ckpt 旁有 <span class="mono">quant_model_description.json</span>，逐模块标记 <span class="mono">W8A8_MXFP8</span> 或 <span class="mono">FLOAT</span>。加载时不做二次量化，只做布局重排与 swizzle。</p>
+
+      <div class="grid3">
+        <div class="kpi"><div class="v">1×32</div><div class="k">MXFP8 分组：每 32 个 K 元素共享一个 E8M0 scale</div></div>
+        <div class="kpi"><div class="v">E4M3 + E8M0</div><div class="k">权重/激活 FP8，scale 为 2 的幂（无尾数）</div></div>
+        <div class="kpi"><div class="v">FLOAT</div><div class="k">GDN 全层、shared expert、o_proj/out_proj、gate、norm、lm_head 保持 bf16</div></div>
+      </div>
+
+      <h3>9.1 量化覆盖范围（以 35B-MXFP8 产物为例）</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:240px">模块</th><th style="width:130px">类型</th><th>运行时实现</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">self_attn.q_proj / k_proj / v_proj</td><td><span class="tag quant">W8A8_MXFP8</span></td><td><span class="mono">AscendW8A8MXFP8Linear</span>：动态激活量化 + <span class="mono">npu_quant_matmul</span></td></tr>
+            <tr><td class="mono">self_attn.o_proj</td><td><span class="tag npu">FLOAT</span></td><td><span class="mono">AscendF16Linear</span>（bf16）</td></tr>
+            <tr><td class="mono">mlp.experts.{gate,up,down}_proj</td><td><span class="tag quant">W8A8_MXFP8</span></td><td><span class="mono">AscendW8A8MXFP8Executor</span>：grouped GEMM + E8M0 scale</td></tr>
+            <tr><td class="mono">mlp.gate / shared_expert / shared_expert_gate</td><td><span class="tag npu">FLOAT</span></td><td><span class="mono">LinearFactory → AscendF16Linear</span></td></tr>
+            <tr><td class="mono">linear_attn.*（qkvz/ba/conv/A_log/dt_bias/norm/out_proj）</td><td><span class="tag npu">FLOAT</span></td><td>torch/fla_npu，不量化</td></tr>
+            <tr><td class="mono">lm_head / embed_tokens</td><td><span class="tag npu">FLOAT</span></td><td>bf16 权重</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="legend" style="margin-top:10px">
+        <span><i style="background:#dcfce7"></i>FLOAT / 非量化（bf16）</span>
+        <span><i style="background:#fef3c7"></i>W8A8_MXFP8</span>
+      </div>
+
+      <h3>9.2 权重布局重排</h3>
+      <p>加载器先按 TP 切分，再做 NPU 需要的布局变换（顺序不能颠倒，因为 pair-split swizzle 会跨越 K 分组维）。</p>
+      <div class="code">
+        <div class="code-bar"><span class="path">rtp_llm/model_loader/per_block_fp8_quant_weight.py</span><span class="lines">L850-889</span></div>
+        <pre><span class="k">if</span> getattr(self, <span class="s">"_use_npu_mxfp8_layout"</span>, <span class="k">False</span>):
+    <span class="c"># 2D: [N, K] -&gt; [K, N]；3D MoE: [E, N, K] -&gt; [E, K, N]</span>
+    <span class="k">if</span> kernel_weight.dim() == <span class="n">2</span>:
+        kernel_weight = kernel_weight.transpose(<span class="n">0</span>, <span class="n">1</span>).contiguous()
+    <span class="k">else</span>:
+        kernel_weight = kernel_weight.transpose(<span class="n">1</span>, <span class="n">2</span>).contiguous()
+    <span class="c"># scale: [N, kp] -&gt; [kp//2, N, 2]；MoE: [E, N, kp] -&gt; [E, kp//2, N, 2]</span>
+    scale_weight = <span class="f">swizzle_scale_to_npu_layout</span>(scale_weight)
+    ...</pre>
+      </div>
+      <p><span class="mono">swizzle_scale_to_npu_layout</span>（<span class="mono">kernels/ascend/w8a8_mx_layout.py:32-60</span>）把 <span class="mono">[N, kp]</span> 变为 <span class="mono">[kp//2, N, 2]</span>：先把 kp 补到偶数，再 reshape 成 <span class="mono">[N, kp//2, 2]</span> 并转置前两维。奇数 kp 的补位不属于任何权重组，值不参与计算。</p>
+
+      <h3>9.3 量化识别与拒绝逻辑</h3>
+      <p><span class="mono">AscendW8A8MXFP8Config</span>（<span class="mono">config/quant_config.py:530-567</span>）只处理显式带 <span class="mono">MXFP8</span> 标记的层；裸 <span class="mono">W8A8</span> 可能是 INT8，不能被当作 MXFP8 加载。未被标记的模块进入 <span class="mono">exclude_modules</span>，保持高精度。<span class="mono">get_supported_kv_cache_dtypes</span> 仅 <span class="mono">fp16/bf16</span>，KV Cache FP8 不在本阶段范围。</p>
+    </section>
+
+    <!-- 10 LIMITS -->
+    <section id="limits">
+      <div class="sec-head"><span class="sec-num">10</span><h2>昇腾侧约束与默认值</h2></div>
+      <p class="sec-desc">这些是当前分支的“硬边界”，排障或迁移时优先确认，避免把“配置问题”误判成“模型/算子问题”。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:210px">约束</th><th style="width:280px">行为</th><th>代码依据</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>投机解码 / MTP</b></td>
+              <td>启动直接报错：<span class="mono">sp_type != NONE</span> 拒绝；MTP rejection sampling / device-state 为 CUDA-only。</td>
+              <td class="mono">start_backend_server.py:95-105</td>
+            </tr>
+            <tr>
+              <td><b>混合 prefill + decode batch</b></td>
+              <td><span class="mono">PyWrappedModel</span> 断言 context 与 decode 不能同时非零；调度器需先排空 decode。</td>
+              <td class="mono">PyWrappedModel.cc:279-284</td>
+            </tr>
+            <tr>
+              <td><b>device-input 模式</b></td>
+              <td><span class="mono">RTP_LLM_DEVICE_INPUT=1</span> 或 <span class="mono">RTP_LLM_DEVICE_INPUT_CHECK=1</span> 启动即失败（CUDA-only 管线）。</td>
+              <td class="mono">start_backend_server.py:105-116</td>
+            </tr>
+            <tr>
+              <td><b>多模态 / ViT</b></td>
+              <td>Qwen3.5 多模态 ckpt 在 Ascend 只服务文本；<span class="mono">mm_model_config.is_multimodal</span> 不置位。</td>
+              <td class="mono">models/qwen3_next/qwen3_next.py:273-287</td>
+            </tr>
+            <tr>
+              <td><b>MRoPE</b></td>
+              <td>Ascend 把 <span class="mono">Mrope → Base</span>（1-D position），只支持 Base/Yarn RoPE cache。</td>
+              <td class="mono">models/qwen3_next/qwen3_next.py:238-257</td>
+            </tr>
+            <tr>
+              <td><b>投机采样参数</b></td>
+              <td><span class="mono">num_beams&gt;1</span>、repetition/presence/frequency penalty、<span class="mono">no_repeat_ngram_size</span> 返回 <span class="mono">INVALID_PARAMS</span>。</td>
+              <td class="mono">NormalEngine.cc:752-787</td>
+            </tr>
+            <tr>
+              <td><b>KV Cache FP8</b></td>
+              <td>不支持 <span class="mono">float8_e4m3fn</span> 作为 KV dtype（仅 fp16/bf16）。</td>
+              <td class="mono">config/quant_config.py:557-562</td>
+            </tr>
+            <tr>
+              <td><b>CUDA Graph</b></td>
+              <td>35B 启动脚本显式 <span class="mono">enable_cuda_graph=false</span>；CANN MoE 注释说明 aclgraph 可捕获性仍待验证。</td>
+              <td class="mono">scripts-qwen3.5-35B/start_server.sh:43<br>fused_moe/impl/ascend/strategy/cann.py:29-32</td>
+            </tr>
+            <tr>
+              <td><b>块大小</b></td>
+              <td>35B 必须 512/512（物理块 = kernel 块）；普通 MHA 场景默认 128。</td>
+              <td class="mono">start_server.sh:5-7<br>config/server_config_setup.py:432-434</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note risk" style="margin-top:16px">
+        <span class="t">排障优先级建议</span>
+        ① 先看 <span class="mono">/health</span> 与 server.log 是否有启动期断言（sp / device-input / 块大小）；② 再看是否把 prefill 与 decode 混批；③ 采样报 <span class="mono">INVALID_PARAMS</span> 时检查 penalty/beam；④ 最后才怀疑算子精度。
+      </div>
+    </section>
+
+    <!-- 11 INDEX -->
+    <section id="index">
+      <div class="sec-head"><span class="sec-num">11</span><h2>代码索引</h2></div>
+      <p class="sec-desc">按链路阶段归档；行号基于当前分支，后续重排后以函数名检索为准。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:160px">阶段</th><th style="width:170px">文件</th><th style="width:130px">关键位置</th><th>作用</th></tr></thead>
+          <tbody>
+            <tr><td>启动</td><td class="mono">rtp_llm/start_server.py</td><td class="mono">L99-192 / L687-719</td><td>派生 backend/frontend 子进程，pipe 健康检查</td></tr>
+            <tr><td>启动</td><td class="mono">rtp_llm/start_backend_server.py</td><td class="mono">L83-124 / L149-179</td><td>Ascend 启动 gate、设备可见性、BackendManager</td></tr>
+            <tr><td>启动</td><td class="mono">rtp_llm/server/backend_manager.py</td><td class="mono">L44-100</td><td>EngineConfig / ModelConfig / 引擎构造</td></tr>
+            <tr><td>HTTP</td><td class="mono">rtp_llm/frontend/frontend_app.py</td><td class="mono">L893-901</td><td>chat completions 路由</td></tr>
+            <tr><td>HTTP</td><td class="mono">rtp_llm/frontend/frontend_server.py</td><td class="mono">L286-360 / L422-490</td><td>SSE 流、request_id、调用 OpenaiEndpoint</td></tr>
+            <tr><td>HTTP</td><td class="mono">rtp_llm/openai/openai_endpoint.py</td><td class="mono">L255-345 / L648-708</td><td>参数映射、chat 渲染、generate_choice</td></tr>
+            <tr><td>HTTP</td><td class="mono">rtp_llm/openai/renderers/qwen35_renderer.py</td><td class="mono">L29-47</td><td>Qwen3.5 模板渲染与注册</td></tr>
+            <tr><td>编排</td><td class="mono">rtp_llm/pipeline/pipeline.py</td><td class="mono">L178-279 / L514-654</td><td>encode、GenerateInput、增量 decode、停止条件</td></tr>
+            <tr><td>编排</td><td class="mono">rtp_llm/server/backend_rpc_server_visitor.py</td><td class="mono">L571-586 / L588-626</td><td>校验、路由、RPC 入队</td></tr>
+            <tr><td>RPC</td><td class="mono">rtp_llm/cpp/model_rpc/LocalRpcServer.cc</td><td class="mono">L294-416</td><td>GenerateStreamCall、enqueue、逐帧输出</td></tr>
+            <tr><td>RPC</td><td class="mono">rtp_llm/cpp/model_rpc/QueryConverter.cc</td><td class="mono">L232-303</td><td>protobuf → GenerateInput</td></tr>
+            <tr><td>引擎</td><td class="mono">rtp_llm/cpp/normal_engine/NormalEngine.cc</td><td class="mono">L712-724 / L823-896</td><td>loop / step / schedule</td></tr>
+            <tr><td>引擎</td><td class="mono">rtp_llm/cpp/normal_engine/NormalExecutor.cc</td><td class="mono">L245-460</td><td>gather / forward / sampler / dispatch</td></tr>
+            <tr><td>引擎</td><td class="mono">rtp_llm/cpp/models/PyWrappedModel.cc</td><td class="mono">L888-1075 / L1127-1283</td><td>Python 模型桥、attention inputs、lm_head</td></tr>
+            <tr><td>模型</td><td class="mono">rtp_llm/models/qwen3_next/qwen3_next.py</td><td class="mono">L121-155 / L203-339</td><td>MoE/混合注意力配置解析、qwen35_moe 注册</td></tr>
+            <tr><td>模型</td><td class="mono">rtp_llm/models_py/model_desc/qwen3_next.py</td><td class="mono">L1046-1524 / L1691-1834</td><td>GDN / decoder layer / 整网 forward</td></tr>
+            <tr><td>模型</td><td class="mono">rtp_llm/models_py/model_desc/generic_moe.py</td><td class="mono">L60-260</td><td>gate、top-k、shared expert、all-reduce</td></tr>
+            <tr><td>MoE</td><td class="mono">.../fused_moe/impl/ascend/strategy/w8a8_mxfp8_strategy.py</td><td class="mono">L49-155</td><td>MXFP8 router + executor 策略</td></tr>
+            <tr><td>MoE</td><td class="mono">.../executors/w8a8_mxfp8_executor.py</td><td class="mono">L90-208</td><td>dispatch → grouped GEMM → combine</td></tr>
+            <tr><td>MoE</td><td class="mono">.../routers/npu_pure_tp_router.py</td><td class="mono">L31-95</td><td>BF16 纯 TP 路由</td></tr>
+            <tr><td>Attention</td><td class="mono">.../attention/ascend_impl/ascend_prefill.py</td><td class="mono">L105-175</td><td>FIA v2 prefill</td></tr>
+            <tr><td>Attention</td><td class="mono">.../attention/ascend_impl/ascend_decode.py</td><td class="mono">L107-185</td><td>FIA v2 decode</td></tr>
+            <tr><td>Attention</td><td class="mono">.../ascend_impl/ascend_attn_params.py</td><td class="mono">L59-90</td><td>positions / slot_mapping</td></tr>
+            <tr><td>Linear</td><td class="mono">.../linear/impl/ascend/w8a8_mxfp8_linear.py</td><td class="mono">L68-105</td><td>MXFP8 线性层</td></tr>
+            <tr><td>Kernel</td><td class="mono">rtp_llm/models_py/kernels/ascend/</td><td class="mono">linear_attention.py:356 / recurrent.py:179 / causal_conv1d.py:295</td><td>GDN 的 FLA-NPU 封装</td></tr>
+            <tr><td>量化</td><td class="mono">rtp_llm/model_loader/w8a8_mxfp8_weight.py</td><td class="mono">L1-130</td><td>ModelSlim 权重加载</td></tr>
+            <tr><td>量化</td><td class="mono">rtp_llm/models_py/kernels/ascend/w8a8_mx_layout.py</td><td class="mono">L32-60</td><td>E8M0 scale swizzle</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 12 VERIFY -->
+    <section id="verify">
+      <div class="sec-head"><span class="sec-num">12</span><h2>快速验证</h2></div>
+      <p class="sec-desc">用一条非 thinking 的 chat 请求验证整条链路；再观察 server.log 中的 profile scope 是否按预期出现。</p>
+      <div class="code">
+        <div class="code-bar"><span class="path">curl</span><span class="lines">服务已就绪</span></div>
+        <pre>curl -s http://127.0.0.1:19000/v1/chat/completions \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{
+    "model": "qwen35_moe",
+    "messages": [{"role":"user","content":"用三句话介绍长江、黄河和珠江"}],
+    "max_tokens": 64,
+    "temperature": 0,
+    "stream": true,
+    "chat_template_kwargs": {"enable_thinking": false}
+  }'</span></pre>
+      </div>
+      <div class="grid2">
+        <div class="card tight">
+          <h4>日志中应出现的阶段</h4>
+          <p><span class="mono">engine.normal.schedule</span> → <span class="mono">executor.gather_model_input</span> → <span class="mono">executor.model_forward</span> → <span class="mono">py_model.forward(normal)</span> → <span class="mono">py_model.forwardPostLayers(lm_head)</span> → <span class="mono">executor.sampler_forward</span>。</p>
+        </div>
+        <div class="card tight">
+          <h4>对应 KV / 混合路径</h4>
+          <p>prefill step 看 <span class="mono">AscendPrefillImpl</span> 与 <span class="mono">Qwen3NextGatedDeltaNetPrefill</span>；decode step 看 <span class="mono">AscendDecodeImpl</span> 与 <span class="mono">Qwen3NextGatedDeltaNetDecode</span>。若只有 prefill 没有 decode，优先检查采样 finished 状态与 max_new_tokens。</p>
+        </div>
+      </div>
+
+      <div class="footer">
+        <span>RTP-LLM-NPU 端到端链路拆解 · v0.1 · 2026-11-06</span>
+        <span>依据当前分支源码整理；行号可能随代码演进变化，请以函数名为准。</span>
+      </div>
+    </section>
+  </main>
+</div>
+
+<a class="backtop" href="#overview" title="回到顶部">↑</a>
+
+<script>
+(function(){
+  // layer strip: 40 layers, every 4th is full attention
+  var strip = document.getElementById('layerStrip');
+  if (strip) {
+    for (var i = 0; i < 40; i++) {
+      var d = document.createElement('div');
+      var isFull = ((i + 1) % 4) === 0;
+      d.className = 'lay ' + (isFull ? 'attn' : 'gdn');
+      d.title = 'Layer ' + i + (isFull ? ' · full attention' : ' · GDN linear attention');
+      d.textContent = i;
+      strip.appendChild(d);
+    }
+  }
+
+  // scroll progress
+  var bar = document.getElementById('progress');
+  function onScroll(){
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    var p = max > 0 ? (h.scrollTop || document.body.scrollTop) / max : 0;
+    bar.style.width = (p * 100).toFixed(2) + '%';
+  }
+  document.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+
+  // scrollspy
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var targets = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function spy(){
+    var pos = (document.documentElement.scrollTop || document.body.scrollTop) + 110;
+    var idx = 0;
+    for (var i = 0; i < targets.length; i++) {
+      if (targets[i] && targets[i].offsetTop <= pos) idx = i;
+    }
+    links.forEach(function(a, i){ a.classList.toggle('active', i === idx); });
+  }
+  document.addEventListener('scroll', spy, {passive:true});
+  spy();
+})();
+</script>
+</body>
+</html>

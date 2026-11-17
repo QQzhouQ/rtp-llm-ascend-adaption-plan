@@ -687,7 +687,7 @@ trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
 29. 多模态实施方案（含全部进度记录）：[02-实施方案.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/11-multimodal/02-实施方案.md)
 
 **端到端链路参考**
-30. RTP-LLM-NPU 端到端链路拆解（HTML，服务层→引擎层→模型层→算子层全链路，含代码行号）：本地 `MTP/RTP-LLM-NPU端到端链路拆解-Qwen3.5-35B-v0.1.html`
+30. RTP-LLM-NPU 端到端链路拆解（HTML，服务层→引擎层→模型层→算子层全链路，含代码行号）：[RTP-LLM-NPU端到端链路拆解-Qwen3.5-35B-v0.1.html](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/12-full-stack-article/RTP-LLM-NPU端到端链路拆解-Qwen3.5-35B-v0.1.html)
 
 **通用决策与修复记录**
 31. MRoPE npu_mrope 实现备份：[MRoPE_npu_mrope_实现方案备份.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/MRoPE_npu_mrope_实现方案备份.md)
