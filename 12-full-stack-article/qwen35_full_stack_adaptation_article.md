@@ -1,5 +1,7 @@
 # Qwen3.5-MoE 全特性栈适配：图模式、MTP、Profiling、TP（魏珊）
 
+**摘要**：本文是 RTP-LLM 昇腾适配系列的第二篇。前篇以 Qwen3-0.6B 为切入点打通了从 CUDA 到 CANN 的端到端推理，本篇将目标推进到 Qwen3.5-35B-A3B——结构最复杂的模型（30 层 GDN 线性注意力 + 10 层 FIA + MoE + 混合 KV + 交错 MRoPE），并依次落地四个关键特性：图模式（aclgraph，消除 host 侧调度开销）、MTP 投机解码（draft+verify 双模型加速）、Profiling（torch_npu 性能剖析）、TP 张量并行（HCCL 双卡）。四个特性贯穿"NPU 特化代码收敛到最小面积"原则，最终全栈：图模式 2.3 倍、图+MTP 2.7 倍（相对 eager），TPOT 从 69.7ms 降到 25.6ms，多模态 MMMU 60.7%，TP=2 吞吐 99.2 tok/s，精度全链路无回归。文中记录了每轮 AI 评审暴露的真实问题（块表别名回归、桶键分叉死锁等）及其修复，以及从"AI 辅助编码"到"AI 评审驱动工程闭环"的方法演进。
+
 ## 从 0.6B 跑通到 35B 全栈
 
 前篇记录了 RTP-LLM 昇腾适配的起步阶段——从 CUDA 到 CANN 的全栈迁移中，团队采用"社区经验 + AI 大模型"双轮驱动，以 Qwen3-0.6B 为切入点打通了端到端推理：编译基础设施、设备抽象、算子接入、KV Cache 与 Attention，一环扣一环。那时的目标是"能跑通"，Qwen3-0.6B 作为结构最简单的验证模型，恰好把整条推理链路从零到一铺了起来。
@@ -687,7 +689,7 @@ trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
 29. 多模态实施方案（含全部进度记录）：[02-实施方案.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/11-multimodal/02-实施方案.md)
 
 **端到端链路参考**
-30. RTP-LLM-NPU 端到端链路拆解（HTML，服务层→引擎层→模型层→算子层全链路，含代码行号）：[RTP-LLM-NPU端到端链路拆解-Qwen3.5-35B-v0.1.html](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/12-full-stack-article/RTP-LLM-NPU端到端链路拆解-Qwen3.5-35B-v0.1.html)
+30. RTP-LLM-NPU 端到端链路拆解（HTML，服务层→引擎层→模型层→算子层全链路，含代码行号）：[RTP-LLM-NPU端到端链路拆解-Qwen3.5-35B-v0.1.html](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/12-full-stack-article/RTP-LLM-NPU%E7%AB%AF%E5%88%B0%E7%AB%AF%E9%93%BE%E8%B7%AF%E6%8B%86%E8%A7%A3-Qwen3.5-35B-v0.1.html)
 
 **通用决策与修复记录**
 31. MRoPE npu_mrope 实现备份：[MRoPE_npu_mrope_实现方案备份.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/MRoPE_npu_mrope_实现方案备份.md)
