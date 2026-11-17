@@ -395,7 +395,26 @@ rtp-llm 的性能剖析框架（`StepWindowProfiler`：窗口控制 + gRPC/per-r
 
 ---
 
-## 四、TP 张量并行：HCCL 双卡
+## 四、TP 张量并行：HCCL 双卡（alibaba 谱系二次移植）
+
+### 4.0 概述与五道门
+
+TP 在 ningweikang 谱系首次跑通（PR #44，5 文件 ~70 行），后来在 alibaba `feature/ascend` 谱系二次移植时遇到了**五道新的门**——因为上游在 #1612/#1620 期间加了一组防御性 fail-fast 和 CUDA 假设，全部需要逐个打开：
+
+| # | 门 | 位置 | 处理 |
+|---|---|---|---|
+| ① | Python TP fail-fast | `start_backend_server.py:403`："TP>1 not supported on Ascend NPU; run single-card" | 删除（TP 功能即本分支） |
+| ② | `backend="nccl"` 硬编码 | `backend_manager.py:59`：虽然上面有 dist_backend 变量的 import 但实际写死 `"nccl"` | 改 `dist_backend`（`get_device_type()` → hccl/nccl） |
+| ③ | assert 只允许 nccl | `collective_torch.py:197`：`assert backend in ["nccl"]` | 改 `["nccl", "hccl"]` |
+| ④ | `--world_size` 默认 1 | `parallel_group_args.py`：默认 1，不自动从 tp_size 推导 | 用户显式传 `--world_size=2`（帮助文案写"WORLD_SIZE = TP_SIZE * DP_SIZE"但无代码实现） |
+| ⑤ | C++ TP fail-fast | `NormalEngine.cc:226`：与 ① 成对的 C++ 侧检查 | 删除（保留 device_input 检查，那是另一特性） |
+
+另有两个运行时陷阱（启动后才暴露）：
+
+| 陷阱 | 现象 | 修复 |
+|---|---|---|
+| `symm_mem` CUDA 依赖 | `TorchSymmMemCommunicator` 硬要 `torch.cuda`，CPU 版 torch 抛 "Torch not compiled with CUDA enabled" | `_create_process_groups` 中加 `if not _is_npu` 跳过（NPU TP 走 HCCL all-reduce 路径） |
+| flashinfer allreduce | CUDA-only 包，NPU 上 init 必崩 | `_init_flashinfer_allreduce` 加 `if _is_npu: return` |
 
 ### 4.1 可复用的架构资产
 
@@ -409,30 +428,189 @@ rtp-llm 已有完整的 Megatron 式 TP 框架，NPU 上不需要新建——只
 | 引擎锁步 | `ModelTypes.cc`(tpSyncModelInputs) + `PyWrappedModel.cc`(logits聚合) | C++ 输入广播 / C++ logits allgather / rank0 采样 |
 | 回调桥 | `ExecOps.cc:491-547` | `execBroadcast/execAllReduce/execAllGather` → GIL → Python 回调 |
 
-### 4.2 NPU 侧断点与修复（5 文件 ~70 行）
+### 4.2 NPU 侧核心改动（alibaba 谱系，collective_torch.py 为主）
 
-| # | 文件 | 改动 | 作用 |
-|---|---|---|---|
-| 1 | `start_backend_server.py` | +12/-4 | 按 `get_device_type()` 选拉起路径，解锁 `multi_rank_start` |
-| 2 | `backend_manager.py` | +5/-1 | 按设备类型选 hccl/nccl |
-| 3 | `collective_torch.py` | +64/-20 | ① 断言放开 hccl；② C++ 通信回调设备无关化（CPU→当前加速器搬运）；③ `_ensure_accel` 助手 |
-| 4 | `ModelTypes.cc` | +12/-4 | pin_memory 防御回退（回调先搬 NPU 再 collective，pin 仅为 host 拷贝优化） |
-| 5 | `base_model.py` | +8/-1 | `_get_device_str()` 改 `torch.npu.current_device()`（确保权重加载设备与 HCCL communicator 设备一致） |
+**设备无关化回调**（`_register_process_groups_to_cpp` 内部）：
 
-### 4.3 排障两轮
+```python
+# 模块级定义（必须在 _create_process_groups 之前可用——曾因函数作用域嵌套导致
+# symm_mem 门读取不到 _is_npu 而漏生效）
+def _npu_runtime() -> bool:
+    try:
+        import torch_npu
+        return torch.npu.is_available()
+    except ImportError:
+        return False
 
-- **UB 直连配对**：950PR 上非相邻 NPU 卡间无 UB 直连，性能骤降。用 `npu-smi` 拓扑 + 带宽实测确认卡对（4+5），再设 `ASCEND_RT_VISIBLE_DEVICES`。
+_is_npu = _npu_runtime()
+def _accel_device_id() -> int:
+    return torch.npu.current_device() if _is_npu else torch.cuda.current_device()
+def _accel_device(device_id: int) -> torch.device:
+    return torch.device("npu" if _is_npu else "cuda", device_id)
+def _accel_is_device_tensor(t) -> bool:
+    return t.is_npu if _is_npu else t.is_cuda
+```
+
+5 处 `torch.cuda.current_device()` / `torch.device("cuda", ...)` 调用全部替换为上述 helper。`_ensure_cuda` 保留函数名（避免无谓重命名 diff），docstring 说明语义为"the accelerator"。
+
+**pin_memory 防御**（`ModelTypes.cc` tpSyncModelInputs）：
+
+```cpp
+// NCCL broadcast requires pinned memory for CPU buffers.
+// On Ascend (HCCL) the Python comm callbacks move CPU buffers to the
+// NPU before the collective, so pinning is a host-copy optimization
+// only — fall back to unpinned memory if pinning is unavailable.
+try {
+    tensor = tensor.pin_memory();
+} catch (const std::exception&) {
+    // keep unpinned tensor
+}
+```
+
+### 4.3 排障记录
+
+- **UB 直连配对**（老谱系首次移植时）：950PR 上非相邻 NPU 卡间无 UB 直连，性能骤降。用 `npu-smi` 拓扑 + 带宽实测确认卡对（4+5），再设 `ASCEND_RT_VISIBLE_DEVICES`。
 - **HCCL 初始化陷阱**：`ep_size` 默认 0 会被自动推导为 tp_size 导致拒绝；显式 `--ep_size=1` 解决。
+- **world_size 崩溃链**（alibaba 谱系二次移植）：`tp_size=2` 但 `world_size` 默认 1 → `init_distributed_environment` 跳过 → C++ 回调未注册 → `synchronizeBlockNum` 的 `execAllGather` 断言崩溃。教训：**启动命令必须显式传 `--world_size`**。
+- **图捕获前的 "Waiting for pending NCCL work"**：TP 环境下 `NPUGraph::capture_begin` 会等 HCCL 集合通信的 pending work 排空——正常等待（几秒），不是死锁。
 
 ### 4.4 结果
 
-TTFT p99 163s→73s（并发 64）、吞吐 172→321 tok/s（1.87×），精度与单卡一致。启动方式与 GPU 完全一致（`ASCEND_RT_VISIBLE_DEVICES` + 标准 TP 参数）。
+**alibaba 谱系（含 #1666 图+MTP+多模态全栈叠加）：**
+
+| 项 | 结果 | 对照单卡 |
+|---|---|---|
+| 图捕获（双 rank） | 5/5 桶 × 2 | 5/5 |
+| Greedy | 与单卡一致 | — |
+| 串行 TPOT | ~17.3 ms/tok | ~16.4（+1ms = all_reduce 开销） |
+| **并发 4×40** | **TPOT p50 22.7ms，99.2 tok/s** | 97.3 tok/s |
+| p99 尾部 | 22.9ms ≈ p50（极稳） | — |
+
+**老谱系独立验证**（ningweikang，首次移植）：TTFT p99 163s→73s、吞吐 172→321 tok/s（1.87×）。
+
+启动方式与 GPU 完全一致：
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0,1 python -m rtp_llm.start_server \
+    --checkpoint_path=<ckpt> --model_type=qwen35_moe \
+    --enable_cuda_graph=1 --kv_cache_mem_mb=8192 \
+    --seq_size_per_block=512 --kernel_seq_size_per_block=512 \
+    --tp_size=2 --ep_size=1 --world_size=2
+```
 
 ---
 
-## 五、特性叠加：全栈终态
+## 五、Profiling：NPU 性能剖析链路（alibaba 谱系移植）
 
-### 5.1 全栈数据（Qwen3.5-35B-A3B，Ascend 950PR 单卡，2048/512 负载）
+### 5.1 现状与缺口
+
+rtp-llm 的性能剖析框架（`StepWindowProfiler`：窗口控制 + gRPC/per-req 触发 + Kineto 异步落盘）有三处 CUDA-only 断点：
+
+1. `TorchProfile::activities_` 硬编码 `{CPU, CUDA}`——Kineto 无 NPU 活动
+2. `cudaProfilerBegin/End` 在 Ascend 是 no-op + TODO
+3. 全代码库零 `torch_npu.profiler` 集成
+
+此外，长期困扰性能归因的是**宿主机 NPU 驱动间歇停摆**：dmesg 出现 `drv_pcie "Message send finish, no resp"` / SVM 错误，表现为 TPOT 在好值与坏值（2-10× 劣化）之间无规律跳变。没有剖析链路就无法区分"代码慢"与"环境抖动"。
+
+### 5.2 方案设计
+
+**取 vllm-ascend 的 `torch_npu.profiler.profile(...)` 调用配方，套进 rtp-llm 已有 C++ 框架**——最小改动、零新依赖：
+
+| 组件 | 设计 |
+|---|---|
+| 触发链 | 原样复用：gRPC `StartProfile` RPC / per-req `gen_timeline` / `--gen_timeline_sync` |
+| 窗口控制 | 原样复用 `StepWindowProfiler`（start_step / num_steps / 异步落盘 worker） |
+| **NPU 采集** | `TorchProfile` 的 `USING_ASCEND` 分支经 pybind 调 Python `torch_npu.profiler.profile()` |
+| 落盘 | torch_npu 自己写 `*_ascend_pt/` 目录（含自动 analyse），`stopAndCollect` 返回 nullptr 跳过 Kineto 的 save worker |
+
+**关键安全前提**（已核实）：**引擎循环线程 == 调 `tick()` 的线程 == 调 Python `forward_micro_batch` 的线程**（都在 `NormalEngine::step()` 内）。因此：
+- 在 `TorchProfile::start()/stop()` 里获取 GIL 调 Python torch_npu profiler **无死锁**
+- profiler 在随后的 `forward_micro_batch`（NPU op 发射处）期间处于激活态——与现有 Kineto start/stop 时序完全一致
+
+### 5.3 实施
+
+**C++ 侧**（`TorchProfiler.cc/h`，+110 行）：
+
+```cpp
+#if USING_ASCEND
+// 持有 Python torch_npu.profiler.profile 对象的 opaque handle
+struct AscendProfilerImpl { py::object profiler; };
+#endif
+
+void TorchProfile::start() {
+#if USING_ASCEND
+    // GIL → import rtp_llm.utils.ascend_profiler → 构造 profile 对象
+    py::gil_scoped_acquire gil;
+    py::object cls = py::module_::import("rtp_llm.utils.ascend_profiler")
+                         .attr("AscendTorchNpuProfiler");
+    ascend_impl_ = std::make_unique<AscendProfilerImpl>(
+        cls(output_dir_, prefix_));
+    ascend_impl_->profiler.attr("start")();
+#endif
+    // ... 原 Kineto start ...
+}
+
+std::pair<...> TorchProfile::stopAndCollect() {
+#if USING_ASCEND
+    if (ascend_impl_) {
+        // stop() 触发 on_trace_ready → 写 *_ascend_pt/ 目录
+        // torch_npu 自己落盘，无 ProfilerResult 需要 enqueue
+        return {nullptr, ""};
+    }
+#endif
+    // ... 原 Kineto stop ...
+}
+#endif
+```
+
+**Python 侧**（`ascend_profiler.py` 新增 84 行）：vllm-ascend 同款 profile 配方，activities 覆盖 NPU kernel（`CPU`/`NPU`）+ CPU 算子（`ProfilerActivity.CPU`）+ 引擎 scope（`WithScope`）三层。
+
+**BUILD**：ascend select 添加 `py_utils` 依赖（pybind GIL 操作需要）。
+
+### 5.4 使用方式
+
+```bash
+# 启动时设置输出目录（只设目录不启动采集）
+python -m rtp_llm.start_server ... --torch_cuda_profiler_dir=/path/to/traces
+
+# 触发（服务运行中，per-request）
+curl -s http://localhost:9000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "qwen35_moe",
+        "messages": [{"role": "user", "content": "东莞有啥特色饮食？"}],
+        "max_tokens": 10,
+        "extra_configs": {
+            "gen_timeline": true,
+            "profile_step": 3,
+            "profile_trace_name": "test_npu_prof"
+        }
+    }'
+```
+
+trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
+- `ASCEND_PROFILER_OUTPUT/trace_view.json`（Chrome Tracing 格式，主 timeline）
+- `kernel_details.csv` / `operator_details.csv` / `op_statistic.csv` / `step_trace_time.csv`
+- `analyse.done` 标记——**自动分析随 stop() 完成**，无需手动 `analyse()`
+
+查看工具：MindStudio Insight（官方推荐）/ `chrome://tracing` / Perfetto。
+
+### 5.5 实测数据（TP=2 环境）
+
+| 检查项 | 实测 |
+|---|---|
+| trace_view.json | **225,682 个事件**（TP 下 host+device 两侧） |
+| NPU kernel | `aclnnMatmulV3`(750) / `aclnnFusedInferAttentionScoreV5`(30) / `aclnnCausalConv1d`(90) / `aclnnRecurrentGatedDeltaRule`(60) |
+| **TP 通信算子** | **`HcclAllreduce`(240 次执行)** / `HcclAllGather`(4)——每层两次 all_reduce 完整捕获 |
+| 引擎 scope | `executor.tp_sync_input` / `gather_model_input` / `tp_sync_logits` |
+| step trace | Computing 87.4ms / Communication 8.0ms / Free 124.0ms——通信开销 ~9% 一目了然 |
+
+该链路直接支撑了图模式多轮优化决策（FIA workspace 一次性查询策略、conv1d 布局消除转置、GDN 方案C 对比等均有 trace 佐证），也是区分"代码慢"与"驱动停摆"的标准工具。
+
+---
+
+## 六、特性叠加：全栈终态
+
+### 6.1 全栈数据（Qwen3.5-35B-A3B，Ascend 950PR 单卡，2048/512 负载）
 
 | 配置 | TPOT avg | 吞吐 tok/s | 相对 eager |
 |---|---|---|---|
@@ -442,7 +620,16 @@ TTFT p99 163s→73s（并发 64）、吞吐 172→321 tok/s（1.87×），精度
 
 多模态（ViT→MRoPE→注入）在图+MTP 下 MMMU 60.7%（900 题全量），纯文本四基准无回归。TP=2 在 ningweikang 谱系独立验证（1.87×）。
 
-### 5.2 跨特性经验
+### 6.2 TP=2 叠加数据（alibaba 谱系，含图+MTP+多模态全栈）
+
+| 项 | TP=2 | 单卡对照 |
+|---|---|---|
+| 并发 4×40 TPOT p50 | 22.7ms | ~24ms |
+| 吞吐 | **99.2 tok/s** | 97.3 tok/s |
+| 图捕获 | 5/5 × 2 rank | 5/5 |
+| Greedy | 一致 | — |
+
+### 6.3 跨特性经验
 
 1. **别名不变式是图模式的宪法**。捕获图绑定捕获期设备地址，任何 out-of-place "防御"都是毒药。回归必须含多 KV 块长请求——短请求会让块表错误"碰巧正确"。
 2. **评审是净增益**。AI 评审六轮共暴露 4 个 P1、3 类 P2 真问题（clamp 快照、桶键分叉、行数启发式、acl_sk.h 告警链），全部转化为防御性修复与测试。
@@ -502,4 +689,5 @@ TTFT p99 163s→73s（并发 64）、吞吐 172→321 tok/s（1.87×），精度
 
 **上游 PR**
 35. 图模式引擎（18 文件，已合入）：https://github.com/alibaba/rtp-llm/pull/1620
-36. Qwen3.5 全栈：图模式 + MTP + 多模态（3+3 文件）：https://github.com/alibaba/rtp-llm/pull/1666
+36. Qwen3.5 全栈：图模式 + MTP + 多模态：https://github.com/alibaba/rtp-llm/pull/1666
+37. TP + Profiling（10 文件，与上述零交叠）：https://github.com/alibaba/rtp-llm/pull/1715
