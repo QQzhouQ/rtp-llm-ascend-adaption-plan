@@ -1,6 +1,6 @@
 # Qwen3.5-MoE 全特性栈适配：图模式、MTP、Profiling、TP（魏珊）
 
-**摘要**：本文是 RTP-LLM 昇腾适配系列的第二篇。前篇以 Qwen3-0.6B 为切入点打通了从 CUDA 到 CANN 的端到端推理，本篇将目标推进到 Qwen3.5-35B-A3B——结构最复杂的模型（30 层 GDN 线性注意力 + 10 层 FIA + MoE + 混合 KV + 交错 MRoPE），并依次落地四个关键特性：图模式（aclgraph，消除 host 侧调度开销）、MTP 投机解码（draft+verify 双模型加速）、Profiling（torch_npu 性能剖析）、TP 张量并行（HCCL 双卡）。四个特性贯穿"NPU 特化代码收敛到最小面积"原则，最终全栈：图模式 2.3 倍、图+MTP 2.7 倍（相对 eager），TPOT 从 69.7ms 降到 25.6ms，多模态 MMMU 60.7%，TP=2 吞吐 99.2 tok/s，精度全链路无回归。文中记录了每轮 AI 评审暴露的真实问题（块表别名回归、桶键分叉死锁等）及其修复，以及从"AI 辅助编码"到"AI 评审驱动工程闭环"的方法演进。
+**摘要**：本文是 RTP-LLM 昇腾适配系列的第二篇。前篇以 Qwen3-0.6B 为切入点打通了从 CUDA 到 CANN 的端到端推理，本篇将目标推进到 Qwen3.5-35B-A3B——结构最复杂的模型（30 层 GDN 线性注意力 + 10 层 FIA + MoE + 混合 KV + 交错 MRoPE），并依次落地四个关键特性：图模式（aclgraph，消除 host 侧调度开销）、MTP 投机解码（draft+verify 双模型加速）、Profiling（torch_npu 性能剖析）、TP 张量并行（HCCL 双卡）、W8A8-MXFP8 量化（单卡部署）。四个特性贯穿"NPU 特化代码收敛到最小面积"原则，最终全栈：图模式 2.3 倍、图+MTP 2.7 倍（相对 eager），TPOT 从 69.7ms 降到 25.6ms，多模态 MMMU 60.7%，TP=2 吞吐 99.2 tok/s，精度全链路无回归。文中记录了每轮 AI 评审暴露的真实问题（块表别名回归、桶键分叉死锁等）及其修复，以及从"AI 辅助编码"到"AI 评审驱动工程闭环"的方法演进。
 
 ## 从 0.6B 跑通到 35B 全栈
 
@@ -622,9 +622,59 @@ trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
 
 ---
 
-## 六、特性叠加：全栈终态
+## 六、W8A8-MXFP8 量化：从 bf16 到单卡部署
 
-### 6.1 全栈数据（Qwen3.5-35B-A3B，Ascend 950PR 单卡，2048/512 负载）
+前五个特性解决的是"跑得快"，量化解决的是"放得下"。Qwen3.5-35B-A3B 的 bf16 权重约 67 GB，单卡 128 GB 下部署密度与 KV 预算都受限——量化的核心收益不是速度，而是让 35B 在 80 GB 卡型上单卡可部署，同预算 KV 池扩大约 7 倍。
+
+### 6.1 挑战
+
+rtp-llm 的量化链路深度绑定 CUDA：FP8 Per-Block（128×128）、DeepGEMM 融合核、手动 E8M0 重量化、CUDA kernel——而 NPU 原生支持的是 1×32 MXFP8（E4M3 数据 + E8M0 共享 scale）。此外：
+
+- **`is_deep_gemm_e8m0_used()` 在 NPU 直接抛异常**（调 CUDA API）——启动即崩
+- **CUDA `reshape` 内存重解释在 NPU 上权重全错**——需要真实 transpose + swizzle
+- **256-expert MoE 路由逐 expert 循环 2 s/token**——完全不可用
+- **35B 混合架构的 GDN/o_proj 不量化**——FLOAT 回退需按层处理
+
+### 6.2 方案与实施
+
+**选型**：MXFP8 与现有 FP8 Per-Block 对位、对齐 vllm-ascend、NPU 原生、免校准——改动最小。核心方案为 3 个替换 + 2 个布局修正 + 1 个屏蔽：
+
+| 项 | CUDA → NPU |
+|---|---|
+| Dense GEMM | DeepGEMM → `npu_quant_matmul` |
+| 权重量化 | `per_block_cast_to_fp8` → `npu_dynamic_mx_quant`（先朝向归一化） |
+| MoE GEMM | DeepGEMM masked → `npu_grouped_matmul` × 2 |
+| MoE 路由 | torch 分桶/掩码 → `npu_moe_init_routing_v2` + `npu_moe_token_unpermute` |
+| E8M0 转换 | `requant_weight_ue8m0` → 删除（NPU 原生输出 E8M0） |
+| `_postprocess` | CUDA reshape 内存重解释 → 真实 transpose + scale swizzle |
+| E8M0 屏蔽 | `is_deep_gemm_e8m0_used()` 在 NPU 返回 False |
+
+**加载时序不可交换**（最关键的布局不变量）：
+
+```
+朝向归一化 [K,N] → [N,K] → TP 切分 → 真实转置回 [K,N] + scale swizzle
+```
+
+**MoE 路由两阶段优化**：初版向量化分桶（2 s/token → ~30 ms/token），性能专项再替换为 CANN 融合路由（init_routing_v2 → dynamic_mx_quant → grouped GEMM × 2 → token_unpermute），dispatch/combine 从多段 torch 算子降为 2 个融合算子。
+
+### 6.3 结果
+
+| 维度 | bf16 | MXFP8 | 差异 |
+|---|---:|---:|---:|
+| 进程 HBM | 79,803 MB | 48,363 MB | **-39.4%** |
+| 权重目录 | 66.99 GB | 37.77 GB | **-43.6%** |
+| TPOT | 58.97 ms | 60.65 ms | +2.8% |
+| gsm8k 100 题 | 97% | 97% | **0（精度无损）** |
+| kernel 总数/步 | 71,942 | 47,142 | -34.5% |
+| prefill 净计算 | — | — | **-11.8%** |
+
+**结论**：显存/存储是核心收益，decode 基本持平（残余为 host-bound + 激活未融合），prefill 为净收益，精度无损。PR [#1711](https://github.com/alibaba/rtp-llm/pull/1711) 评审中。
+
+---
+
+## 七、特性叠加：全栈终态
+
+### 7.1 全栈数据（Qwen3.5-35B-A3B，Ascend 950PR 单卡，2048/512 负载）
 
 | 配置 | TPOT avg | 吞吐 tok/s | 相对 eager |
 |---|---|---|---|
@@ -634,7 +684,7 @@ trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
 
 多模态（ViT→MRoPE→注入）在图+MTP 下 MMMU 60.7%（900 题全量），纯文本四基准无回归。TP=2 在 ningweikang 谱系独立验证（1.87×）。
 
-### 6.2 TP=2 叠加数据（alibaba 谱系，含图+MTP+多模态全栈）
+### 7.2 TP=2 叠加数据（alibaba 谱系，含图+MTP+多模态全栈）
 
 | 项 | TP=2 | 单卡对照 |
 |---|---|---|
@@ -643,7 +693,7 @@ trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
 | 图捕获 | 5/5 × 2 rank | 5/5 |
 | Greedy | 一致 | — |
 
-### 6.3 跨特性经验
+### 7.3 跨特性经验
 
 1. **别名不变式是图模式的宪法**。捕获图绑定捕获期设备地址，任何 out-of-place "防御"都是毒药。回归必须含多 KV 块长请求——短请求会让块表错误"碰巧正确"。
 2. **评审是净增益**。AI 评审六轮共暴露 4 个 P1、3 类 P2 真问题（clamp 快照、桶键分叉、行数启发式、acl_sk.h 告警链），全部转化为防御性修复与测试。
@@ -700,6 +750,10 @@ trace 落盘到 `<output_dir>/test_npu_prof_wr0__<pid>_<ts>_ascend_pt/`，含：
 32. do_sample 温度除零修复：[Ascend后处理do_sample温度除零精度问题修复记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/Ascend后处理do_sample温度除零精度问题修复记录.md)
 33. getTorchCudaDevice 决策记录：[getTorchCudaDevice改回index=-1的决策记录.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/getTorchCudaDevice改回index=-1的决策记录.md)
 34. dev_0824 合入全记录：[dev_0824合入问题全记录与代码修改清单.md](https://github.com/QQzhouQ/rtp-llm-ascend-adaption-plan/blob/main/8-notes/dev_0824合入问题全记录与代码修改清单.md)
+
+**W8A8-MXFP8 量化**
+34a. 量化特性适配总结（简化版）：[Qwen3.5-MoE-W8A8-MXFP8量化特性适配总结（简化版）](https://gitcode.com/skywang2/rtp-llm-porting/blob/main/docs/W8_MXFP8%E8%BF%81%E7%A7%BB%E6%96%B9%E6%A1%88/007%E7%89%B9%E6%80%A7%E9%80%82%E9%85%8D%E6%80%BB%E7%BB%93/Qwen3.5-MoE-W8A8-MXFP8%E9%87%8F%E5%8C%96%E7%89%B9%E6%80%A7%E9%80%82%E9%85%8D%E6%80%BB%E7%BB%93%EF%BC%88%E7%AE%80%E5%8C%96%E7%89%88%EF%BC%89.md)
+34b. 上游 PR（评审中）：https://github.com/alibaba/rtp-llm/pull/1711
 
 **上游 PR**
 35. 图模式引擎（18 文件，已合入）：https://github.com/alibaba/rtp-llm/pull/1620
